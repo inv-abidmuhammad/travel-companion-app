@@ -21,9 +21,9 @@ def test_route_after_agent_goes_to_tools_when_tool_calls_present():
     assert route_after_agent(state) == "tools"
 
 
-def test_route_after_agent_goes_to_respond_when_no_tool_calls():
+def test_route_after_agent_goes_to_done_when_no_tool_calls():
     state = {"messages": [AIMessage(content="Here's your itinerary.")]}
-    assert route_after_agent(state) == "respond"
+    assert route_after_agent(state) == "done"
 
 
 def test_tools_node_runs_the_matching_tool_and_tags_the_call_id():

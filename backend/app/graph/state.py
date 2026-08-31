@@ -32,6 +32,8 @@ class AdventureState(TypedDict, total=False):
     itinerary: list[Any]
     tool_results: dict[str, Any]
     validation_errors: list[str]
+    validation_attempts: int
+    needs_revision: bool
 
     # Phase 4 — human-in-the-loop / re-planning
     pending_questions: list[str]
