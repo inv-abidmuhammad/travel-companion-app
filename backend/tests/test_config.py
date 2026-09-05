@@ -6,8 +6,6 @@ its empty-string default — no error, just a confusing 500 later, deep
 inside the Gemini client. This test would have caught it before it
 ever hit a running server.
 """
-import os
-
 from app.config import BACKEND_DIR, Settings
 
 

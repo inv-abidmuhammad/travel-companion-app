@@ -1,8 +1,6 @@
 """
 Structural tests: verify the graph is wired the way the diagram says,
-without needing a live GOOGLE_API_KEY. Once you're past Phase 1, add a
-happy-path test that mocks agent_node's LLM call to return a canned
-AIMessage and asserts the full run reaches `respond`.
+without needing a live GOOGLE_API_KEY.
 """
 from app.graph.graph import build_graph
 

@@ -3,9 +3,10 @@ FastAPI entrypoint.
 
     uvicorn app.main:app --reload
 
-Two endpoints for Phase 1:
-  GET  /health        liveness check
-  POST /chat           send one message, get the agent's reply
+Endpoints:
+  GET  /health              liveness check
+  POST /chat                 send one message, get the agent's reply
+  GET  /debug/state/{id}     inspect a conversation's raw graph state
 
 `thread_id` is the conversation id LangGraph's checkpointer uses to
 resume state between calls — pass the same one back on every message
@@ -45,3 +46,23 @@ def chat(req: ChatRequest) -> ChatResponse:
         config=config,
     )
     return ChatResponse(reply=result["final_response"], thread_id=req.thread_id)
+
+
+@app.get("/debug/state/{thread_id}")
+def debug_state(thread_id: str) -> dict:
+    """Inspect a conversation's raw graph state — this is the actual
+    proof for things like "did validate_node loop back to agent?",
+    rather than guessing from the reply's wording. Reads whatever
+    MemorySaver has snapshotted for this thread_id; returns nothing
+    useful if the server has restarted since, since MemorySaver is
+    in-process only until Phase 3.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    snapshot = adventure_graph.get_state(config)
+    values = snapshot.values
+    return {
+        "message_count": len(values.get("messages", [])),
+        "message_types": [type(m).__name__ for m in values.get("messages", [])],
+        "validation_attempts": values.get("validation_attempts", 0),
+        "validation_errors": values.get("validation_errors", []),
+    }

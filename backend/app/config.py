@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     google_api_key: str = ""
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3.1-flash-lite"
 
     database_url: str = ""
     search_api_key: str = ""
