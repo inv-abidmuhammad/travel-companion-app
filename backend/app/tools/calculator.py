@@ -1,5 +1,5 @@
 """
-calculator tool — Phase 1's one tool.
+calculator tool.
 
 Deliberately narrow: it parses arithmetic via Python's ast module rather
 than eval(), so it can't execute arbitrary code no matter what the LLM

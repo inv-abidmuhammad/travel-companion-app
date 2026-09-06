@@ -50,7 +50,8 @@ def test_stops_retrying_once_max_attempts_reached():
     assert result["needs_revision"] is False
 
 
-def test_route_after_validate_reads_the_flag_directly():
+def test_route_after_validate_reads_the_flags_directly():
     assert route_after_validate({"needs_revision": True}) == "agent"
-    assert route_after_validate({"needs_revision": False}) == "respond"
+    assert route_after_validate({"needs_revision": False, "validation_errors": ["x"]}) == "human_input"
+    assert route_after_validate({"needs_revision": False, "validation_errors": []}) == "respond"
     assert route_after_validate({}) == "respond"

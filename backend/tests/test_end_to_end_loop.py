@@ -46,8 +46,12 @@ def test_full_graph_loops_through_validate_when_agent_guesses():
         )
 
         assert result["final_response"] == "Based on the forecast, expect 24°C and partly cloudy skies."
-        assert result["validation_attempts"] == 1
-        assert result["validation_errors"] == []  # clean on the retry
+        # respond_node resets per-turn validation bookkeeping once a
+        # turn concludes cleanly — so the retry count itself isn't
+        # visible in the final result. The message trace below is the
+        # real proof that the loop happened.
+        assert result["validation_attempts"] == 0
+        assert result["validation_errors"] == []
 
         # The message trace should show the full loop happened, not
         # just that we ended up with the right final_response.

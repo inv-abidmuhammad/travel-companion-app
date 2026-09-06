@@ -6,10 +6,6 @@ lives here. Durable application data (users, trips, saved itineraries)
 belongs in the database once Phase 3 adds persistence — this is
 short-lived, per-conversation working memory that LangGraph's
 checkpointer snapshots between turns.
-
-Phase 1 uses: messages, user_id, trip_id, final_response.
-Everything else is defined now so later phases are additive, not
-a state-shape rewrite.
 """
 from typing import Annotated, Any, TypedDict
 
@@ -38,4 +34,6 @@ class AdventureState(TypedDict, total=False):
     # Phase 4 — human-in-the-loop / re-planning
     pending_questions: list[str]
     needs_human_input: bool
+    human_wants_retry: bool
+    proceeded_with_caveat: bool
     current_step: str | None

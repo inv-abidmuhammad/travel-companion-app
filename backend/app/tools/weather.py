@@ -1,11 +1,9 @@
 """
-get_weather — Phase 2's first new tool.
-
-Mocked, per the blueprint's "Architecture principle: don't integrate
-every service on day one." Same shape a real weather API tool will
-return later (see the blueprint's tool contract pattern), so swapping
-in a real API in Phase 2+ later means changing the tool body, not the
-graph, the agent's prompt, or anything that calls it.
+get_weather — mocked, per the blueprint's "Architecture principle:
+don't integrate every service on day one." Same shape a real weather
+API tool will return later, so swapping in a real API means changing
+this file's body, not the graph, the agent's prompt, or anything that
+calls it.
 """
 import hashlib
 
@@ -23,9 +21,9 @@ def get_weather(location: str, date: str) -> dict:
     e.g. '2026-09-15' or 'day 2 of the trip').
     """
     # Deterministic mock: same (location, date) always returns the same
-    # forecast, so you can reason about and test agent behavior without
-    # results changing between runs. A real implementation replaces the
-    # body below with an actual API call — the return shape stays the same.
+    # forecast, so agent behavior is reproducible and testable. A real
+    # implementation replaces the body below with an actual API call —
+    # the return shape stays the same.
     seed = int(hashlib.sha256(f"{location}|{date}".encode()).hexdigest(), 16)
     condition = _CONDITIONS[seed % len(_CONDITIONS)]
     temp_c = 18 + (seed % 15)

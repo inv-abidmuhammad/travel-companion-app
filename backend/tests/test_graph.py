@@ -13,7 +13,7 @@ def test_graph_compiles():
 def test_graph_has_expected_nodes():
     graph = build_graph()
     node_names = set(graph.get_graph().nodes.keys())
-    assert {"agent", "tools", "validate", "respond"}.issubset(node_names)
+    assert {"agent", "tools", "validate", "human_input", "respond"}.issubset(node_names)
 
 
 def test_tool_node_routes_from_agent():
@@ -39,3 +39,18 @@ def test_validate_can_loop_back_to_agent_and_can_reach_respond():
     targets_from_validate = {e.target for e in edges if e.source == "validate"}
     assert "agent" in targets_from_validate
     assert "respond" in targets_from_validate
+
+
+def test_validate_can_reach_human_input():
+    graph = build_graph()
+    edges = graph.get_graph().edges
+    targets_from_validate = {e.target for e in edges if e.source == "validate"}
+    assert "human_input" in targets_from_validate
+
+
+def test_human_input_can_loop_back_to_agent_and_can_reach_respond():
+    graph = build_graph()
+    edges = graph.get_graph().edges
+    targets_from_human_input = {e.target for e in edges if e.source == "human_input"}
+    assert "agent" in targets_from_human_input
+    assert "respond" in targets_from_human_input

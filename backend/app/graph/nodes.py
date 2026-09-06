@@ -1,19 +1,22 @@
 """
 Graph nodes.
 
-Six functions, all written by hand — no `ToolNode`, no `tools_condition`.
-Seeing the mechanics once makes it much easier to know what to change
-later (e.g. per-tool retry logic, or parallel tool execution).
+Eight functions, all written by hand — no `ToolNode`, no
+`tools_condition`. Seeing the mechanics once makes it much easier to
+know what to change later.
 
-  agent_node          the LLM, bound to tools, decides what to do next
-  tools_node          runs whatever tools the agent asked for
-  route_after_agent   decides: loop back to tools, or move to validate
-  validate_node       catches unverified weather/budget claims
-  route_after_validate  decides: loop back to agent for a fix, or respond
-  respond_node         turns the agent's final AIMessage into final_response
+  agent_node             the LLM, bound to tools, decides what to do next
+  tools_node             runs whatever tools the agent asked for
+  route_after_agent      decides: loop back to tools, or move to validate
+  validate_node          catches unverified weather/budget claims
+  route_after_validate   decides: retry agent, ask a human, or respond
+  human_input_node       pauses the graph via interrupt() for a person
+  route_after_human_input  decides: retry agent, or respond
+  respond_node            turns the latest AIMessage into final_response
 """
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langgraph.types import interrupt
 
 from app.config import get_settings
 from app.graph.state import AdventureState
@@ -115,8 +118,8 @@ def _extract_text(content) -> str:
         [{"type": "text", "text": "...", "extras": {...}}]
 
     Without this, str(content) on a list just gives you the raw
-    Python repr — which is exactly the bug that motivated writing
-    this function: it's what showed up in the `reply` field.
+    Python repr — which is exactly a real bug this project hit: that
+    repr showed up verbatim in the API's `reply` field.
     """
     if isinstance(content, str):
         return content
@@ -129,12 +132,6 @@ def _extract_text(content) -> str:
                 parts.append(block)
         return "".join(parts)
     return str(content)
-
-
-def respond_node(state: AdventureState) -> dict:
-    """Extract the agent's final text once it stops calling tools."""
-    last = state["messages"][-1]
-    return {"final_response": _extract_text(last.content)}
 
 
 # Phrases that only make sense if the corresponding tool actually ran.
@@ -196,8 +193,110 @@ def validate_node(state: AdventureState) -> dict:
 
 
 def route_after_validate(state: AdventureState) -> str:
-    """Straight read of the flag validate_node just set — no guessing
-    from message content, no re-deriving anything. If validate_node
-    decided a revision is needed, loop back to agent; otherwise move
-    on to respond."""
-    return "agent" if state.get("needs_revision") else "respond"
+    """Three-way branch, read straight off the flags validate_node set:
+
+      needs_revision True        -> agent          (automatic retry)
+      errors left, no revision   -> human_input     (retries exhausted,
+                                                       ask a person)
+      no errors                  -> respond
+
+    This is the edge the original blueprint's graph was missing:
+    validation had no path to human_input, only router did. Automatic
+    retries handle the common case; a person only gets interrupted
+    when the agent couldn't fix it itself.
+    """
+    if state.get("needs_revision"):
+        return "agent"
+    if state.get("validation_errors"):
+        return "human_input"
+    return "respond"
+
+
+def human_input_node(state: AdventureState) -> dict:
+    """Genuinely pauses graph execution — not the same thing as the
+    agent asking a clarifying question in a normal reply, which just
+    ends the turn and needs no special mechanism. `interrupt()` stops
+    execution mid-run, mid-graph, and the process (or even the whole
+    server) doesn't need to stay running while it waits: the
+    checkpointer has already saved everything, so resuming later,
+    from any process, with `Command(resume=answer)` picks up exactly
+    here, as if this function had just returned that value.
+
+    Reached only when validate_node has exhausted its automatic
+    retries and still has unresolved concerns — matches the
+    blueprint's guardrail: "Require confirmation before consequential
+    actions" extended to "require confirmation before presenting an
+    unverifiable claim as fact."
+    """
+    errors = state.get("validation_errors", [])
+    question = (
+        f"I couldn't automatically verify this after {MAX_VALIDATION_RETRIES} "
+        "attempts: " + "; ".join(errors) + ". Reply 'proceed' to accept the "
+        "answer with this caveat noted, or 'retry' to have me try again."
+    )
+    # Execution stops here until someone calls:
+    #   adventure_graph.invoke(Command(resume=<their reply>), config=config)
+    answer = interrupt({"question": question, "validation_errors": errors})
+
+    decision = str(answer).strip().lower()
+    wants_retry = "retry" in decision
+    note = HumanMessage(content=f"[human decision] {answer}")
+
+    result: dict = {
+        "messages": [note],
+        "human_wants_retry": wants_retry,
+        "proceeded_with_caveat": not wants_retry,
+    }
+    if wants_retry:
+        # Give the agent a fresh set of automatic retries rather than
+        # immediately re-triggering another interrupt on the same count.
+        result["validation_attempts"] = 0
+    return result
+
+
+def route_after_human_input(state: AdventureState) -> str:
+    """Straight flag read, same pattern as route_after_validate — no
+    parsing message content again here."""
+    return "agent" if state.get("human_wants_retry") else "respond"
+
+
+def _last_ai_message(messages: list) -> AIMessage:
+    """respond_node used to assume state["messages"][-1] was always
+    the agent's answer — true when validate went straight to respond,
+    but human_input_node can now append a HumanMessage after it. Find
+    the most recent AIMessage explicitly instead of assuming position.
+    """
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            return message
+    raise ValueError("No AIMessage found in conversation state")
+
+
+def respond_node(state: AdventureState) -> dict:
+    """Extract the agent's final text — the most recent AIMessage, not
+    necessarily the last message in the list.
+
+    Also resets this turn's validation bookkeeping
+    (validation_attempts, validation_errors, needs_revision,
+    human_wants_retry, proceeded_with_caveat) back to defaults. This
+    matters because LangGraph's checkpointer persists state *between*
+    separate conversation turns, not just within one — without this
+    reset, a validation retry count from one topic would silently
+    carry into a completely unrelated later question and could
+    trigger an immediate, unearned escalation to human_input.
+    """
+    last_ai = _last_ai_message(state["messages"])
+    text = _extract_text(last_ai.content)
+
+    if state.get("proceeded_with_caveat") and state.get("validation_errors"):
+        caveat = " ".join(state["validation_errors"])
+        text = f"{text}\n\n*Note: {caveat} This wasn't independently verified — treat it as an estimate.*"
+
+    return {
+        "final_response": text,
+        "validation_attempts": 0,
+        "validation_errors": [],
+        "needs_revision": False,
+        "human_wants_retry": False,
+        "proceeded_with_caveat": False,
+    }
