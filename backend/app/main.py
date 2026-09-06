@@ -4,23 +4,53 @@ FastAPI entrypoint.
     uvicorn app.main:app --reload
 
 Endpoints:
-  GET  /health              liveness check
-  POST /chat                 send one message, get the agent's reply
-  GET  /debug/state/{id}     inspect a conversation's raw graph state
+  GET  /health                    liveness check
+  POST /chat                       send one message, get the agent's reply
+  GET  /debug/state/{id}           inspect a conversation's raw graph state
+  POST /trips                      create a durable trip record
+  GET  /trips/{trip_id}            fetch one trip
+  GET  /users/{user_id}/trips      list a user's trips
+  GET  /trips/{trip_id}/resume     trip metadata + its conversation state
 
 `thread_id` is the conversation id LangGraph's checkpointer uses to
-resume state between calls — pass the same one back on every message
-in a conversation to keep memory. Phase 3 replaces MemorySaver with a
-Postgres checkpointer so this survives a restart.
+resume state between calls. As of Phase 3, that checkpointer is
+Postgres-backed (see app/db/checkpointer.py) - conversations survive
+a server restart, unlike Phase 1/2's in-process MemorySaver.
+
+`Trip` rows (app/db/models.py) are separate, durable business data -
+budget, origin, destination, status - linked to a conversation only
+by `thread_id`. The checkpointer owns "what was said"; the database
+owns "what trip this is." /trips/{trip_id}/resume is the join point:
+given a trip, load its conversation state to continue chatting.
 """
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, HTTPException
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-from app.graph.graph import adventure_graph
+from app.config import get_settings
+from app.db import crud
+from app.db.checkpointer import build_postgres_checkpointer
+from app.db.session import get_db, init_db
+from app.graph.graph import build_graph
 
-app = FastAPI(title="AI Adventure Companion")
+settings = get_settings()
+init_db()  # create users/trips tables if they don't exist yet
+
+_pg_checkpointer, _pg_pool = build_postgres_checkpointer(settings.database_url)
+adventure_graph = build_graph(checkpointer=_pg_checkpointer)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    _pg_pool.close()  # release Postgres connections cleanly on shutdown
+
+
+app = FastAPI(title="AI Adventure Companion", lifespan=lifespan)
 
 
 class ChatRequest(BaseModel):
@@ -45,22 +75,11 @@ def chat(req: ChatRequest) -> ChatResponse:
     """One endpoint handles both starting a new turn and answering a
     pending interrupt() question, based on whether the graph is
     currently paused for this thread_id.
-
-    `snapshot.next` being non-empty means the graph stopped mid-run
-    rather than reaching END — for this graph, the only way that
-    happens is human_input_node's interrupt(). If your graph later
-    gains other reasons to pause (or fail) mid-run, this check would
-    need to distinguish those cases; it's a fine simplification for
-    now since interrupt() is the only pause point that exists.
     """
     config = {"configurable": {"thread_id": req.thread_id}}
     snapshot = adventure_graph.get_state(config)
 
     if snapshot.next:
-        # Paused, waiting on human_input_node's interrupt() — the
-        # incoming message is the answer to that question, not a new
-        # conversational turn. Command(resume=...) picks execution
-        # back up exactly inside interrupt(), returning this value.
         result = adventure_graph.invoke(Command(resume=req.message), config=config)
     else:
         result = adventure_graph.invoke(
@@ -69,9 +88,6 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
 
     if "__interrupt__" in result:
-        # The graph paused again (or for the first time) — surface the
-        # question as the reply, and flag it so the client knows the
-        # next message should answer it, not start a new topic.
         question = result["__interrupt__"][0].value.get("question", "Please respond.")
         return ChatResponse(reply=question, thread_id=req.thread_id, awaiting_confirmation=True)
 
@@ -80,14 +96,9 @@ def chat(req: ChatRequest) -> ChatResponse:
 
 @app.get("/debug/state/{thread_id}")
 def debug_state(thread_id: str) -> dict:
-    """Inspect a conversation's raw graph state — this is the actual
-    proof for things like "did validate_node loop back to agent?" or
-    "is this thread currently paused on an interrupt?", rather than
-    guessing from the reply's wording. Reads whatever MemorySaver has
-    snapshotted for this thread_id; returns nothing useful if the
-    server has restarted since, since MemorySaver is in-process only
-    until Phase 3.
-    """
+    """Inspect a conversation's raw graph state. Now reads from
+    Postgres - try this, restart uvicorn, and call it again with the
+    same thread_id to see the state survive the restart."""
     config = {"configurable": {"thread_id": thread_id}}
     snapshot = adventure_graph.get_state(config)
     values = snapshot.values
@@ -97,4 +108,99 @@ def debug_state(thread_id: str) -> dict:
         "validation_attempts": values.get("validation_attempts", 0),
         "validation_errors": values.get("validation_errors", []),
         "paused_at": list(snapshot.next),
+    }
+
+
+class TripCreate(BaseModel):
+    user_id: str
+    thread_id: str
+    origin: str | None = None
+    destination: str | None = None
+    budget: float | None = None
+    duration_days: int | None = None
+
+
+class TripUpdate(BaseModel):
+    origin: str | None = None
+    destination: str | None = None
+    budget: float | None = None
+    duration_days: int | None = None
+    status: str | None = None
+
+
+class TripOut(BaseModel):
+    id: str
+    user_id: str
+    thread_id: str
+    origin: str | None = None
+    destination: str | None = None
+    budget: float | None = None
+    duration_days: int | None = None
+    status: str
+
+    model_config = {"from_attributes": True}
+
+
+@app.post("/trips", response_model=TripOut)
+def create_trip(payload: TripCreate, db: Session = Depends(get_db)) -> TripOut:
+    trip = crud.create_trip(
+        db,
+        user_id=payload.user_id,
+        thread_id=payload.thread_id,
+        origin=payload.origin,
+        destination=payload.destination,
+        budget=payload.budget,
+        duration_days=payload.duration_days,
+    )
+    return TripOut.model_validate(trip)
+
+
+@app.get("/trips/{trip_id}", response_model=TripOut)
+def get_trip(trip_id: str, db: Session = Depends(get_db)) -> TripOut:
+    trip = crud.get_trip(db, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return TripOut.model_validate(trip)
+
+
+@app.patch("/trips/{trip_id}", response_model=TripOut)
+def patch_trip(trip_id: str, payload: TripUpdate, db: Session = Depends(get_db)) -> TripOut:
+    fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+    trip = crud.update_trip(db, trip_id, **fields)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return TripOut.model_validate(trip)
+
+
+@app.get("/users/{user_id}/trips", response_model=list[TripOut])
+def list_trips(user_id: str, db: Session = Depends(get_db)) -> list[TripOut]:
+    trips = crud.list_trips_for_user(db, user_id)
+    return [TripOut.model_validate(t) for t in trips]
+
+
+@app.get("/trips/{trip_id}/resume")
+def resume_trip(trip_id: str, db: Session = Depends(get_db)) -> dict:
+    """The actual "resume an existing trip" feature from the
+    blueprint: given a trip's durable id, look up which conversation
+    thread it's tied to and return that conversation's current state,
+    so a client can keep chatting on that thread_id via /chat without
+    already knowing it."""
+    trip = crud.get_trip(db, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    config = {"configurable": {"thread_id": trip.thread_id}}
+    snapshot = adventure_graph.get_state(config)
+    values = snapshot.values
+
+    return {
+        "trip_id": trip.id,
+        "thread_id": trip.thread_id,
+        "status": trip.status,
+        "origin": trip.origin,
+        "destination": trip.destination,
+        "budget": trip.budget,
+        "duration_days": trip.duration_days,
+        "message_count": len(values.get("messages", [])),
+        "final_response": values.get("final_response"),
     }

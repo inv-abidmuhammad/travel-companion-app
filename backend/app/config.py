@@ -21,14 +21,33 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     model_name: str = "gemini-2.5-flash"
 
+    # Bare psycopg-style DSN, e.g. "postgresql://user:pass@host:5432/db" —
+    # this is the form both langgraph-checkpoint-postgres AND (via the
+    # property below) SQLAlchemy can use, from one setting.
     database_url: str = ""
+
     search_api_key: str = ""
     weather_api_key: str = ""
     maps_api_key: str = ""
 
     secret_key: str = "dev-only-change-me"
 
+    @property
+    def sqlalchemy_database_url(self) -> str:
+        """SQLAlchemy needs a dialect+driver prefix to pick psycopg3
+        specifically (plain "postgresql://" would default to psycopg2,
+        which isn't installed here — psycopg3 is, since the LangGraph
+        checkpointer needs it too). langgraph-checkpoint-postgres, on
+        the other hand, wants the bare DSN with no "+psycopg" suffix —
+        confirmed directly: it raises a connection-string parse error
+        if given one. Hence: one setting, two derived forms.
+        """
+        if self.database_url.startswith("postgresql://"):
+            return self.database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        return self.database_url
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+

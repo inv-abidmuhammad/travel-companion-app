@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: travel_companion_db
+    environment:
+      POSTGRES_USER: travel_companion_user
+      POSTGRES_PASSWORD: travel_companion_password
+      POSTGRES_DB: travel_companion
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U travel_companion_user -d travel_companion"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

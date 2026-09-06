@@ -21,7 +21,15 @@ at all — a person only ever got looped in for missing info the router
 already knew was missing, never for something validation caught
 downstream. Here, validate's automatic retries handle the common
 case, and a person only gets interrupted when those retries fail.
+
+`build_graph` takes an optional checkpointer so this module stays
+DB-agnostic and testable without a running Postgres — tests (and the
+default `adventure_graph` below) get an in-process MemorySaver. The
+actual running app builds its own Postgres-backed checkpointer in
+main.py and passes it in instead, so real conversations survive a
+server restart.
 """
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
@@ -38,7 +46,7 @@ from app.graph.nodes import (
 from app.graph.state import AdventureState
 
 
-def build_graph():
+def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph = StateGraph(AdventureState)
 
     graph.add_node("agent", agent_node)
@@ -70,13 +78,15 @@ def build_graph():
 
     graph.add_edge("respond", END)
 
-    # MemorySaver keeps conversation state in-process, keyed by thread_id.
-    # A checkpointer isn't optional here the way it was in Phase 1 —
-    # interrupt() requires one to persist state across the pause, even
-    # within a single process. Swap for Postgres in Phase 3.
-    checkpointer = MemorySaver()
+    if checkpointer is None:
+        # In-process only — fine for tests and quick scripts, but
+        # state disappears on restart. The real app never hits this
+        # branch; see adventure_graph construction in main.py.
+        checkpointer = MemorySaver()
     return graph.compile(checkpointer=checkpointer)
 
 
-# Compiled once at import time; reused across requests.
+# Default, in-memory instance — used by tests and anything that just
+# needs a working graph without setting up a database. The FastAPI
+# app builds its own Postgres-backed instance instead (see main.py).
 adventure_graph = build_graph()
