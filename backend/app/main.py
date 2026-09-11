@@ -24,6 +24,7 @@ owns "what trip this is." /trips/{trip_id}/resume is the join point:
 given a trip, load its conversation state to continue chatting.
 """
 from contextlib import asynccontextmanager
+import uuid
 
 from fastapi import Depends, FastAPI, HTTPException
 from langchain_core.messages import HumanMessage
@@ -113,7 +114,7 @@ def debug_state(thread_id: str) -> dict:
 
 class TripCreate(BaseModel):
     user_id: str
-    thread_id: str
+    thread_id: str | None = None
     origin: str | None = None
     destination: str | None = None
     budget: float | None = None
@@ -126,6 +127,7 @@ class TripUpdate(BaseModel):
     budget: float | None = None
     duration_days: int | None = None
     status: str | None = None
+    itinerary_text: str | None = None
 
 
 class TripOut(BaseModel):
@@ -137,12 +139,18 @@ class TripOut(BaseModel):
     budget: float | None = None
     duration_days: int | None = None
     status: str
+    itinerary_text: str | None = None
 
     model_config = {"from_attributes": True}
 
 
 @app.post("/trips", response_model=TripOut)
 def create_trip(payload: TripCreate, db: Session = Depends(get_db)) -> TripOut:
+
+    if payload.thread_id is None:
+        # If the client didn't provide a thread_id, generate one for them.
+        # This is the common case: a new trip starts a new conversation.
+        payload.thread_id = str(uuid.uuid4())
     trip = crud.create_trip(
         db,
         user_id=payload.user_id,
@@ -203,4 +211,23 @@ def resume_trip(trip_id: str, db: Session = Depends(get_db)) -> dict:
         "duration_days": trip.duration_days,
         "message_count": len(values.get("messages", [])),
         "final_response": values.get("final_response"),
+    }
+
+
+@app.get("/trips/{trip_id}/messages")
+def list_trip_messages(trip_id: str, db: Session = Depends(get_db)) -> dict:
+    """Given a trip's durable id, look up which conversation
+    thread it's tied to and return that conversation's entire message history."""
+    trip = crud.get_trip(db, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    config = {"configurable": {"thread_id": trip.thread_id}}
+    snapshot = adventure_graph.get_state(config)
+    messages = snapshot.values["messages"] if "messages" in snapshot.values else []
+
+    return {
+        "trip_id": trip.id,
+        "message_count": len(messages),
+        "messages": messages,
     }
