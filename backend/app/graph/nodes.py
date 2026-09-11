@@ -19,9 +19,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.types import interrupt
 
 from app.config import get_settings
-from app.graph.state import AdventureState
 from app.tools.calculator import calculator
 from app.tools.weather import get_weather
+
+from .state import AdventureState
+from .utils import extract_text
 
 SYSTEM_PROMPT = """You are the AI Adventure Companion, a conversational \
 travel and adventure planning partner. You help turn vague trip ideas \
@@ -110,30 +112,6 @@ def route_after_agent(state: AdventureState) -> str:
     return "done"
 
 
-def _extract_text(content) -> str:
-    """Providers don't agree on message content shape. Some (older
-    Anthropic-style APIs, some Gemini responses) return `content` as a
-    plain string. Others return a list of content blocks, e.g.:
-
-        [{"type": "text", "text": "...", "extras": {...}}]
-
-    Without this, str(content) on a list just gives you the raw
-    Python repr — which is exactly a real bug this project hit: that
-    repr showed up verbatim in the API's `reply` field.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "".join(parts)
-    return str(content)
-
-
 # Phrases that only make sense if the corresponding tool actually ran.
 # This is deliberately a narrow, literal check — not an LLM judging
 # an LLM — so its behavior is predictable and easy to unit test.
@@ -160,7 +138,7 @@ def validate_node(state: AdventureState) -> dict:
     """
     messages = state["messages"]
     last = messages[-1]
-    text = _extract_text(last.content).lower()
+    text = extract_text(last.content).lower()
 
     tools_used = {m.name for m in messages if isinstance(m, ToolMessage)}
 
@@ -286,7 +264,7 @@ def respond_node(state: AdventureState) -> dict:
     trigger an immediate, unearned escalation to human_input.
     """
     last_ai = _last_ai_message(state["messages"])
-    text = _extract_text(last_ai.content)
+    text = extract_text(last_ai.content)
 
     if state.get("proceeded_with_caveat") and state.get("validation_errors"):
         caveat = " ".join(state["validation_errors"])

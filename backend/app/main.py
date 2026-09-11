@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -37,6 +37,7 @@ from app.db import crud
 from app.db.checkpointer import build_postgres_checkpointer
 from app.db.session import get_db, init_db
 from app.graph.graph import build_graph
+from app.graph.utils import normalize_message
 
 settings = get_settings()
 init_db()  # create users/trips tables if they don't exist yet
@@ -225,6 +226,7 @@ def list_trip_messages(trip_id: str, db: Session = Depends(get_db)) -> dict:
     config = {"configurable": {"thread_id": trip.thread_id}}
     snapshot = adventure_graph.get_state(config)
     messages = snapshot.values["messages"] if "messages" in snapshot.values else []
+    messages = [normalize_message(m) for m in messages if not isinstance(m, ToolMessage)]
 
     return {
         "trip_id": trip.id,
