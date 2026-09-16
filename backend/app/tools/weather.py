@@ -9,7 +9,7 @@ import hashlib
 
 from langchain_core.tools import tool
 
-_CONDITIONS = ["clear", "partly cloudy", "overcast", "light rain", "thunderstorms"]
+CONDITIONS = ["clear", "partly cloudy", "overcast", "light rain", "thunderstorms"]
 
 
 @tool
@@ -25,7 +25,7 @@ def get_weather(location: str, date: str) -> dict:
     # implementation replaces the body below with an actual API call —
     # the return shape stays the same.
     seed = int(hashlib.sha256(f"{location}|{date}".encode()).hexdigest(), 16)
-    condition = _CONDITIONS[seed % len(_CONDITIONS)]
+    condition = CONDITIONS[seed % len(CONDITIONS)]
     temp_c = 18 + (seed % 15)
     rain_probability = round((seed % 100) / 100, 2)
 

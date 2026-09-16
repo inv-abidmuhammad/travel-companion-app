@@ -5,7 +5,7 @@ import re
 _SYNTHETIC_PATTERNS = [
     re.compile(r"^\[validation check\]", re.IGNORECASE),
     # add other internal-injection prefixes here as they show up, e.g.
-    # re.compile(r"^\[system retry\]", re.IGNORECASE),
+    # re.compile(r"^\[internal retry\]", re.IGNORECASE),
 ]
 
 def extract_text(content) -> str:
@@ -47,7 +47,7 @@ def normalize_message(msg) -> dict:
     text = extract_text(msg.content)
     synthetic = role == "user" and is_synthetic(text)
     if synthetic:
-        role = "system"
+        role = "internal"
 
     normalized = {
         "id": msg.id,
@@ -56,6 +56,9 @@ def normalize_message(msg) -> dict:
     }
     if synthetic:
         normalized["synthetic"] = True
+
+    if role == "user" and text.startswith("[human decision]"):
+        normalized["text"] = text[len("[human decision]") :].strip()
 
     tool_calls = getattr(msg, "tool_calls", None) or []
     if tool_calls:

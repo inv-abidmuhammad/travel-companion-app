@@ -20,7 +20,7 @@ from langgraph.types import interrupt
 
 from app.config import get_settings
 from app.tools.calculator import calculator
-from app.tools.weather import get_weather
+from app.tools.weather import get_weather, CONDITIONS
 
 from .state import AdventureState
 from .utils import extract_text
@@ -115,8 +115,8 @@ def route_after_agent(state: AdventureState) -> str:
 # Phrases that only make sense if the corresponding tool actually ran.
 # This is deliberately a narrow, literal check — not an LLM judging
 # an LLM — so its behavior is predictable and easy to unit test.
-_WEATHER_CLAIM_MARKERS = ["°c", "rain probability", "forecast", "weather"]
-_BUDGET_CLAIM_MARKERS = ["₹", "per day", "per-day", "budget is"]
+_WEATHER_CLAIM_MARKERS = ["°c", "rain probability", "forecast"] + CONDITIONS
+_BUDGET_CLAIM_MARKERS = ["₹", "rupee", "per day", "per-day", "budget is"]
 
 MAX_VALIDATION_RETRIES = 2
 
@@ -153,9 +153,9 @@ def validate_node(state: AdventureState) -> dict:
     if errors and attempts < MAX_VALIDATION_RETRIES:
         nudge = HumanMessage(
             content=(
-                "[validation check] Your last answer had unverified claims: "
+                "[validation check] This is an internal message. Your last answer had unverified claims: "
                 + "; ".join(errors)
-                + ". Call the appropriate tool(s), then give a corrected answer."
+                + ". Call the appropriate tool(s), then retry giving a natural, corrected reply to the user, without apologizing, without mentioning the word 'unverified claims' or tool names, and without referring back to this note at all."
             )
         )
         return {
