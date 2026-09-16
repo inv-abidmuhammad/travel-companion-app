@@ -26,6 +26,10 @@ class ChatResponse(BaseModel):
         description="Unique identifier of the conversation thread."
     )
 
+    trip_id: str = Field(
+        description="Unique identifier of the trip associated with this conversation."
+    )
+
     awaiting_confirmation: bool = Field(
         default=False,
         description="Indicates whether the chatbot is waiting for the user's confirmation."

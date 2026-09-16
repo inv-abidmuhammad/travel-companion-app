@@ -47,6 +47,10 @@ def get_trip(db: Session, trip_id: str) -> Trip | None:
     return db.get(Trip, trip_id)
 
 
+def get_trip_by_thread_id(db: Session, thread_id: str) -> Trip | None:
+    return db.query(Trip).filter(Trip.thread_id == thread_id).first()
+
+
 def list_trips_for_user(db: Session, user_id: str) -> list[Trip]:
     return list(
         db.query(Trip).filter(Trip.user_id == user_id).order_by(Trip.created_at.desc())

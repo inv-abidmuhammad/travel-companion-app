@@ -26,7 +26,7 @@ given a trip, load its conversation state to continue chatting.
 from contextlib import asynccontextmanager
 import uuid
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 from sqlalchemy.orm import Session
@@ -37,6 +37,7 @@ from app.db.checkpointer import build_postgres_checkpointer
 from app.db.session import get_db, init_db
 from app.graph.graph import build_graph
 from app.graph.utils import normalize_message
+from app.graph.extraction import extract_trip_from_conversation
 
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.trips import TripCreate, TripUpdate, TripOut
@@ -71,10 +72,19 @@ def health() -> dict:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest, graph=Depends(get_adventure_graph)) -> ChatResponse:
+def chat(
+    req: ChatRequest,
+    graph=Depends(get_adventure_graph),
+    db: Session = Depends(get_db),
+) -> ChatResponse:
     """One endpoint handles both starting a new turn and answering a
     pending interrupt() question, based on whether the graph is
     currently paused for this thread_id.
+
+    A trip row is created automatically on the first message for a
+    thread_id — the client never needs to call POST /trips separately.
+    The trip_id is returned in every response so the client can call
+    PATCH /trips/{trip_id}?sync_from_conversation=true at any time.
     """
     config = {"configurable": {"thread_id": req.thread_id}}
     snapshot = graph.get_state(config)
@@ -87,11 +97,26 @@ def chat(req: ChatRequest, graph=Depends(get_adventure_graph)) -> ChatResponse:
             config=config,
         )
 
+    # Auto-create a trip row the first time this thread is used.
+    # On subsequent messages the existing trip is returned unchanged.
+    trip = crud.get_trip_by_thread_id(db, req.thread_id)
+    if trip is None:
+        trip = crud.create_trip(db, user_id=req.user_id, thread_id=req.thread_id)
+
     if "__interrupt__" in result:
         question = result["__interrupt__"][0].value.get("question", "Please respond.")
-        return ChatResponse(reply=question, thread_id=req.thread_id, awaiting_confirmation=True)
+        return ChatResponse(
+            reply=question,
+            thread_id=req.thread_id,
+            trip_id=trip.id,
+            awaiting_confirmation=True,
+        )
 
-    return ChatResponse(reply=result["final_response"], thread_id=req.thread_id)
+    return ChatResponse(
+        reply=result["final_response"],
+        thread_id=req.thread_id,
+        trip_id=trip.id,
+    )
 
 
 @app.get("/debug/state/{thread_id}")
@@ -139,8 +164,33 @@ def get_trip(trip_id: str, db: Session = Depends(get_db)) -> TripOut:
 
 
 @app.patch("/trips/{trip_id}", response_model=TripOut)
-def patch_trip(trip_id: str, payload: TripUpdate, db: Session = Depends(get_db)) -> TripOut:
-    fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+def patch_trip(
+    trip_id: str,
+    payload: TripUpdate,
+    sync_from_conversation: bool = Query(
+        False,
+        description=(
+            "When true, ignores the request body and instead reads the trip's "
+            "conversation thread to extract update fields automatically."
+        ),
+    ),
+    db: Session = Depends(get_db),
+    graph=Depends(get_adventure_graph),
+) -> TripOut:
+    if sync_from_conversation:
+        trip = crud.get_trip(db, trip_id)
+        if trip is None:
+            raise HTTPException(status_code=404, detail="Trip not found")
+        config = {"configurable": {"thread_id": trip.thread_id}}
+        snapshot = graph.get_state(config)
+        messages = snapshot.values.get("messages", [])
+        extracted = extract_trip_from_conversation(messages)
+        # Only write fields the extraction was confident about — None means
+        # "couldn't determine", not "clear this field".
+        fields = {k: v for k, v in extracted.model_dump().items() if v is not None}
+    else:
+        fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+
     trip = crud.update_trip(db, trip_id, **fields)
     if trip is None:
         raise HTTPException(status_code=404, detail="Trip not found")
