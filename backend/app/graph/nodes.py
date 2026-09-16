@@ -13,57 +13,40 @@ know what to change later.
   human_input_node       pauses the graph via interrupt() for a person
   route_after_human_input  decides: retry agent, or respond
   respond_node            turns the latest AIMessage into final_response
+
+LLM construction and tool registration live in llm.py.
+The system prompt lives in prompts.py.
 """
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.types import interrupt
 
-from app.config import get_settings
-from app.tools.calculator import calculator
-from app.tools.weather import get_weather, CONDITIONS
+from app.tools.weather import CONDITIONS
 
+from .llm import TOOLS_BY_NAME, llm_with_tools
+from .prompts import PLANNER_SYSTEM_PROMPT
 from .state import AdventureState
-from .utils import extract_text
-
-SYSTEM_PROMPT = """You are the AI Adventure Companion, a conversational \
-travel and adventure planning partner. You help turn vague trip ideas \
-into concrete plans: destination, route, day-by-day itinerary, budget.
-
-Ask only for essential missing information (starting point, rough \
-budget, duration, interests) before proposing options. Use the \
-calculator tool for any budget math instead of estimating in your head. \
-Use the get_weather tool to check conditions for mountain driving or \
-outdoor activity days before recommending them — don't guess at \
-weather. Explain trade-offs conversationally rather than dumping a \
-bare list."""
-
-TOOLS = [calculator, get_weather]
-
-# name -> callable tool, so tools_node can look up whatever the LLM asks for
-TOOLS_BY_NAME = {t.name: t for t in TOOLS}
+from .utils import extract_text, is_synthetic
 
 
-def _get_llm():
-    settings = get_settings()
-    return ChatGoogleGenerativeAI(
-        model=settings.model_name,
-        google_api_key=settings.google_api_key,
-        temperature=0.4,
-    ).bind_tools(TOOLS)
-
+# ---------------------------------------------------------------------------
+# agent node
+# ---------------------------------------------------------------------------
 
 def agent_node(state: AdventureState) -> dict:
     """The router+planner, merged: one LLM call that sees full history
     and either calls a tool, asks a clarifying question, or gives a
     final answer. Looping back here after `tools` lets it chain
     multiple tool calls across turns without new graph edges."""
-    llm = _get_llm()
     messages = state["messages"]
     if not messages or not isinstance(messages[0], SystemMessage):
-        messages = [SystemMessage(content=SYSTEM_PROMPT), *messages]
-    response: AIMessage = llm.invoke(messages)
+        messages = [SystemMessage(content=PLANNER_SYSTEM_PROMPT), *messages]
+    response: AIMessage = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
+
+# ---------------------------------------------------------------------------
+# tools node
+# ---------------------------------------------------------------------------
 
 def tools_node(state: AdventureState) -> dict:
     """Manual stand-in for LangGraph's prebuilt ToolNode.
@@ -112,6 +95,10 @@ def route_after_agent(state: AdventureState) -> str:
     return "done"
 
 
+# ---------------------------------------------------------------------------
+# validate node
+# ---------------------------------------------------------------------------
+
 # Phrases that only make sense if the corresponding tool actually ran.
 # This is deliberately a narrow, literal check — not an LLM judging
 # an LLM — so its behavior is predictable and easy to unit test.
@@ -119,6 +106,17 @@ _WEATHER_CLAIM_MARKERS = ["°c", "rain probability", "forecast"] + CONDITIONS
 _BUDGET_CLAIM_MARKERS = ["₹", "rupee", "per day", "per-day", "budget is"]
 
 MAX_VALIDATION_RETRIES = 2
+
+
+def _is_internal_message(msg) -> bool:
+    """True for HumanMessages injected by the graph itself — validation
+    nudges ([validation check]) and human-decision records ([human decision])
+    — as opposed to real user input. Used by validate_node to find the
+    true start of the current conversation turn."""
+    if not isinstance(msg, HumanMessage):
+        return False
+    text = extract_text(msg.content)
+    return is_synthetic(text) or text.lower().startswith("[human decision]")
 
 
 def validate_node(state: AdventureState) -> dict:
@@ -140,7 +138,18 @@ def validate_node(state: AdventureState) -> dict:
     last = messages[-1]
     text = extract_text(last.content).lower()
 
-    tools_used = {m.name for m in messages if isinstance(m, ToolMessage)}
+    # Scope tool-use check to the *current* turn only.
+    # Walk backwards through the history and collect ToolMessages until
+    # we hit the last real user message — this correctly spans retry loops
+    # (where [validation check] HumanMessages are injected) and human-input
+    # resume turns (where [human decision] HumanMessages are injected),
+    # both of which are part of the same planning turn.
+    tools_used: set[str] = set()
+    for m in reversed(messages[:-1]):  # [:-1] skips the AIMessage being validated
+        if isinstance(m, ToolMessage):
+            tools_used.add(m.name)
+        elif isinstance(m, HumanMessage) and not _is_internal_message(m):
+            break  # hit the real user message that started this turn
 
     errors = []
     if any(marker in text for marker in _WEATHER_CLAIM_MARKERS) and "get_weather" not in tools_used:
@@ -190,6 +199,10 @@ def route_after_validate(state: AdventureState) -> str:
     return "respond"
 
 
+# ---------------------------------------------------------------------------
+# human input node
+# ---------------------------------------------------------------------------
+
 def human_input_node(state: AdventureState) -> dict:
     """Genuinely pauses graph execution — not the same thing as the
     agent asking a clarifying question in a normal reply, which just
@@ -237,6 +250,10 @@ def route_after_human_input(state: AdventureState) -> str:
     parsing message content again here."""
     return "agent" if state.get("human_wants_retry") else "respond"
 
+
+# ---------------------------------------------------------------------------
+# respond node
+# ---------------------------------------------------------------------------
 
 def _last_ai_message(messages: list) -> AIMessage:
     """respond_node used to assume state["messages"][-1] was always

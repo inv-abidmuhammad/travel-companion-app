@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from app.enums import TripStatus
+
 
 class Base(DeclarativeBase):
     pass
@@ -52,7 +54,7 @@ class Trip(Base):
     destination: Mapped[str | None] = mapped_column(String, nullable=True)
     budget: Mapped[float | None] = mapped_column(Float, nullable=True)
     duration_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    status: Mapped[str] = mapped_column(String, default="draft")
+    status: Mapped[str] = mapped_column(String, default=TripStatus.DRAFT.value)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)

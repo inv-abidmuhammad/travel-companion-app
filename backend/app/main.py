@@ -26,10 +26,9 @@ given a trip, load its conversation state to continue chatting.
 from contextlib import asynccontextmanager
 import uuid
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -39,32 +38,31 @@ from app.db.session import get_db, init_db
 from app.graph.graph import build_graph
 from app.graph.utils import normalize_message
 
-settings = get_settings()
-init_db()  # create users/trips tables if they don't exist yet
+from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.trips import TripCreate, TripUpdate, TripOut
 
-_pg_checkpointer, _pg_pool = build_postgres_checkpointer(settings.database_url)
-adventure_graph = build_graph(checkpointer=_pg_checkpointer)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Run startup I/O only when the server actually boots — not at import
+    time — so tests that import from main.py don't require a live database."""
+    _settings = get_settings()
+    init_db()  # create users/trips tables if they don't exist yet
+    checkpointer, pool = build_postgres_checkpointer(_settings.database_url)
+    app.state.graph = build_graph(checkpointer=checkpointer)
     yield
-    _pg_pool.close()  # release Postgres connections cleanly on shutdown
+    pool.close()  # release Postgres connections cleanly on shutdown
 
 
 app = FastAPI(title="AI Adventure Companion", lifespan=lifespan)
 
 
-class ChatRequest(BaseModel):
-    message: str
-    thread_id: str = "default"
-    user_id: str = "anonymous"
-
-
-class ChatResponse(BaseModel):
-    reply: str
-    thread_id: str
-    awaiting_confirmation: bool = False
+def get_adventure_graph(request: Request):
+    """FastAPI dependency: injects the compiled LangGraph instance that was
+    built during lifespan startup. Endpoints that need the graph declare
+    `graph = Depends(get_adventure_graph)` instead of reaching for a global."""
+    return request.app.state.graph
 
 
 @app.get("/health")
@@ -73,18 +71,18 @@ def health() -> dict:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
+def chat(req: ChatRequest, graph=Depends(get_adventure_graph)) -> ChatResponse:
     """One endpoint handles both starting a new turn and answering a
     pending interrupt() question, based on whether the graph is
     currently paused for this thread_id.
     """
     config = {"configurable": {"thread_id": req.thread_id}}
-    snapshot = adventure_graph.get_state(config)
+    snapshot = graph.get_state(config)
 
     if snapshot.next:
-        result = adventure_graph.invoke(Command(resume=req.message), config=config)
+        result = graph.invoke(Command(resume=req.message), config=config)
     else:
-        result = adventure_graph.invoke(
+        result = graph.invoke(
             {"messages": [HumanMessage(content=req.message)], "user_id": req.user_id},
             config=config,
         )
@@ -97,12 +95,12 @@ def chat(req: ChatRequest) -> ChatResponse:
 
 
 @app.get("/debug/state/{thread_id}")
-def debug_state(thread_id: str) -> dict:
+def debug_state(thread_id: str, graph=Depends(get_adventure_graph)) -> dict:
     """Inspect a conversation's raw graph state. Now reads from
     Postgres - try this, restart uvicorn, and call it again with the
     same thread_id to see the state survive the restart."""
     config = {"configurable": {"thread_id": thread_id}}
-    snapshot = adventure_graph.get_state(config)
+    snapshot = graph.get_state(config)
     values = snapshot.values
     return {
         "message_count": len(values.get("messages", [])),
@@ -111,38 +109,6 @@ def debug_state(thread_id: str) -> dict:
         "validation_errors": values.get("validation_errors", []),
         "paused_at": list(snapshot.next),
     }
-
-
-class TripCreate(BaseModel):
-    user_id: str
-    thread_id: str | None = None
-    origin: str | None = None
-    destination: str | None = None
-    budget: float | None = None
-    duration_days: int | None = None
-
-
-class TripUpdate(BaseModel):
-    origin: str | None = None
-    destination: str | None = None
-    budget: float | None = None
-    duration_days: int | None = None
-    status: str | None = None
-    itinerary_text: str | None = None
-
-
-class TripOut(BaseModel):
-    id: str
-    user_id: str
-    thread_id: str
-    origin: str | None = None
-    destination: str | None = None
-    budget: float | None = None
-    duration_days: int | None = None
-    status: str
-    itinerary_text: str | None = None
-
-    model_config = {"from_attributes": True}
 
 
 @app.post("/trips", response_model=TripOut)
@@ -188,7 +154,7 @@ def list_trips(user_id: str, db: Session = Depends(get_db)) -> list[TripOut]:
 
 
 @app.get("/trips/{trip_id}/resume")
-def resume_trip(trip_id: str, db: Session = Depends(get_db)) -> dict:
+def resume_trip(trip_id: str, db: Session = Depends(get_db), graph=Depends(get_adventure_graph)) -> dict:
     """The actual "resume an existing trip" feature from the
     blueprint: given a trip's durable id, look up which conversation
     thread it's tied to and return that conversation's current state,
@@ -199,7 +165,7 @@ def resume_trip(trip_id: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail="Trip not found")
 
     config = {"configurable": {"thread_id": trip.thread_id}}
-    snapshot = adventure_graph.get_state(config)
+    snapshot = graph.get_state(config)
     values = snapshot.values
 
     return {
@@ -216,7 +182,7 @@ def resume_trip(trip_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/trips/{trip_id}/messages")
-def list_trip_messages(trip_id: str, db: Session = Depends(get_db)) -> dict:
+def list_trip_messages(trip_id: str, db: Session = Depends(get_db), graph=Depends(get_adventure_graph)) -> dict:
     """Given a trip's durable id, look up which conversation
     thread it's tied to and return that conversation's entire message history."""
     trip = crud.get_trip(db, trip_id)
@@ -224,7 +190,7 @@ def list_trip_messages(trip_id: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail="Trip not found")
 
     config = {"configurable": {"thread_id": trip.thread_id}}
-    snapshot = adventure_graph.get_state(config)
+    snapshot = graph.get_state(config)
     messages = snapshot.values["messages"] if "messages" in snapshot.values else []
     messages = [normalize_message(m) for m in messages if not isinstance(m, ToolMessage)]
 
