@@ -33,7 +33,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from app.graph.nodes import (
+from .nodes import (
     agent_node,
     human_input_node,
     respond_node,
@@ -43,7 +43,7 @@ from app.graph.nodes import (
     tools_node,
     validate_node,
 )
-from app.graph.state import AdventureState
+from .state import AdventureState
 
 
 def build_graph(checkpointer: BaseCheckpointSaver | None = None):

@@ -65,7 +65,7 @@ def test_create_and_get_trip(db_session):
     assert fetched is not None
     assert fetched.origin == "Kochi"
     assert fetched.budget == 25000
-    assert fetched.status == "planning"  # default
+    assert fetched.status == "draft"  # default
 
 
 def test_get_trip_returns_none_for_unknown_id(db_session):
@@ -97,3 +97,14 @@ def test_update_trip_changes_only_given_fields(db_session):
 
 def test_update_trip_returns_none_for_unknown_id(db_session):
     assert crud.update_trip(db_session, "does-not-exist", budget=1) is None
+
+
+def test_get_trip_by_thread_id_returns_matching_trip(db_session):
+    trip = crud.create_trip(db_session, user_id="u6", thread_id="thread-abc")
+    found = crud.get_trip_by_thread_id(db_session, "thread-abc")
+    assert found is not None
+    assert found.id == trip.id
+
+
+def test_get_trip_by_thread_id_returns_none_for_unknown_thread(db_session):
+    assert crud.get_trip_by_thread_id(db_session, "no-such-thread") is None

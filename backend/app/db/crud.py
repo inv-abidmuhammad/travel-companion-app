@@ -6,7 +6,7 @@ one thing so it's easy to test and easy to call from an endpoint or
 """
 from sqlalchemy.orm import Session
 
-from app.db.models import Trip, User
+from .models import Trip, User
 
 
 def get_or_create_user(db: Session, user_id: str) -> User:

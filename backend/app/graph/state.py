@@ -1,39 +1,28 @@
 """
 Graph state for the AI Adventure Companion.
 
-Keep this typed and intentional: only what nodes need to make decisions
-lives here. Durable application data (users, trips, saved itineraries)
-belongs in the database once Phase 3 adds persistence — this is
-short-lived, per-conversation working memory that LangGraph's
-checkpointer snapshots between turns.
+TypedDict with total=False: nodes return partial dicts and LangGraph
+merges them into state, so every field is implicitly optional with no
+default needed. Pydantic BaseModel is the right choice for external API
+schemas (see app/schemas/); TypedDict is the conventional fit here.
 """
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, TypedDict
 
 from langgraph.graph.message import add_messages
 
 
 class AdventureState(TypedDict, total=False):
-    # Phase 1 — core conversation loop
-    messages: Annotated[list, add_messages]
-    user_id: str
-    trip_id: str | None
-    final_response: str | None
+    # ── core conversation ────────────────────────────────────────────────────
+    messages: Annotated[list, add_messages]  # append-only via add_messages reducer
+    user_id: str                             # carried from the initial /chat request
+    final_response: str | None              # set by respond_node, read by main.py
 
-    # Phase 2 — tool-using planner
-    intent: str | None
-    user_preferences: dict[str, Any]
-    constraints: dict[str, Any]
-    destination_candidates: list[Any]
-    selected_destination: dict[str, Any] | None
-    itinerary: list[Any]
-    tool_results: dict[str, Any]
+    # ── validation guardrail ─────────────────────────────────────────────────
+    # validate_node writes these; route_after_validate and respond_node read them.
     validation_errors: list[str]
     validation_attempts: int
     needs_revision: bool
 
-    # Phase 4 — human-in-the-loop / re-planning
-    pending_questions: list[str]
-    needs_human_input: bool
-    human_wants_retry: bool
-    proceeded_with_caveat: bool
-    current_step: str | None
+    # ── human-in-the-loop ────────────────────────────────────────────────────
+    # human_input_node writes this; route_after_human_input and respond_node read it.
+    user_wants_retry: bool

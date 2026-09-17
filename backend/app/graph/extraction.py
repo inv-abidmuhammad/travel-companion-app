@@ -18,7 +18,7 @@ Design choices:
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
 
-from app.graph.llm import llm
+from .llm import llm
 from .prompts import EXTRACTION_SYSTEM_PROMPT
 from .utils import extract_text, is_synthetic
 

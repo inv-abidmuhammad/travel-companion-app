@@ -235,8 +235,7 @@ def human_input_node(state: AdventureState) -> dict:
 
     result: dict = {
         "messages": [note],
-        "human_wants_retry": wants_retry,
-        "proceeded_with_caveat": not wants_retry,
+        "user_wants_retry": wants_retry,
     }
     if wants_retry:
         # Give the agent a fresh set of automatic retries rather than
@@ -248,7 +247,7 @@ def human_input_node(state: AdventureState) -> dict:
 def route_after_human_input(state: AdventureState) -> str:
     """Straight flag read, same pattern as route_after_validate — no
     parsing message content again here."""
-    return "agent" if state.get("human_wants_retry") else "respond"
+    return "agent" if state.get("user_wants_retry") else "respond"
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +272,7 @@ def respond_node(state: AdventureState) -> dict:
 
     Also resets this turn's validation bookkeeping
     (validation_attempts, validation_errors, needs_revision,
-    human_wants_retry, proceeded_with_caveat) back to defaults. This
+    user_wants_retry) back to defaults. This
     matters because LangGraph's checkpointer persists state *between*
     separate conversation turns, not just within one — without this
     reset, a validation retry count from one topic would silently
@@ -283,7 +282,7 @@ def respond_node(state: AdventureState) -> dict:
     last_ai = _last_ai_message(state["messages"])
     text = extract_text(last_ai.content)
 
-    if state.get("proceeded_with_caveat") and state.get("validation_errors"):
+    if not state.get("user_wants_retry") and state.get("validation_errors"):
         caveat = " ".join(state["validation_errors"])
         text = f"{text}\n\n*Note: {caveat} This wasn't independently verified — treat it as an estimate.*"
 
@@ -292,6 +291,5 @@ def respond_node(state: AdventureState) -> dict:
         "validation_attempts": 0,
         "validation_errors": [],
         "needs_revision": False,
-        "human_wants_retry": False,
-        "proceeded_with_caveat": False,
+        "user_wants_retry": False,
     }

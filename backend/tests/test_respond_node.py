@@ -51,4 +51,34 @@ def test_respond_node_joins_multiple_text_blocks():
         ]
     }
     result = respond_node(state)
-    assert result["final_response"] == "Part one. Part two."
+    assert result["final_response"] == "Part one. \nPart two."
+
+
+def test_respond_node_appends_caveat_when_user_proceeded_despite_errors():
+    """When the user said 'proceed' after validation retries were exhausted,
+    user_wants_retry is False and validation_errors is non-empty — respond_node
+    should append the unverified-claim disclaimer."""
+    state = {
+        "messages": [AIMessage(content="It'll be sunny and 24°C.")],
+        "user_wants_retry": False,
+        "validation_errors": ["Response describes specific weather conditions without calling get_weather."],
+    }
+    result = respond_node(state)
+    assert "wasn't independently verified" in result["final_response"]
+    assert "24°C" in result["final_response"]
+    # Bookkeeping must be cleared for the next turn.
+    assert result["user_wants_retry"] is False
+    assert result["validation_errors"] == []
+
+
+def test_respond_node_no_caveat_when_retry_succeeded():
+    """When user_wants_retry was True the agent got another chance and
+    succeeded cleanly — by the time respond_node runs, validation_errors
+    should be empty and no caveat should appear."""
+    state = {
+        "messages": [AIMessage(content="Based on the forecast, expect 24°C.")],
+        "user_wants_retry": False,
+        "validation_errors": [],   # cleared by validate_node on clean pass
+    }
+    result = respond_node(state)
+    assert "wasn't independently verified" not in result["final_response"]

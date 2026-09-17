@@ -30,10 +30,8 @@ def test_proceed_after_exhausting_retries_returns_answer_with_caveat():
         call_index["n"] += 1
         return response
 
-    with patch("app.graph.nodes._get_llm") as mock_get_llm:
-        mock_llm = MagicMock()
+    with patch("app.graph.nodes.llm_with_tools") as mock_llm:
         mock_llm.invoke.side_effect = fake_invoke
-        mock_get_llm.return_value = mock_llm
 
         graph = build_graph()
         config = {"configurable": {"thread_id": "test-proceed"}}
@@ -83,10 +81,8 @@ def test_retry_after_exhausting_retries_gives_the_agent_another_shot():
         call_index["n"] += 1
         return response
 
-    with patch("app.graph.nodes._get_llm") as mock_get_llm:
-        mock_llm = MagicMock()
+    with patch("app.graph.nodes.llm_with_tools") as mock_llm:
         mock_llm.invoke.side_effect = fake_invoke
-        mock_get_llm.return_value = mock_llm
 
         graph = build_graph()
         config = {"configurable": {"thread_id": "test-retry"}}
