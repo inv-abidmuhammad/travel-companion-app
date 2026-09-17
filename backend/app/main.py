@@ -87,6 +87,10 @@ def chat(
     The trip_id is returned in every response so the client can call
     PATCH /trips/{trip_id}?sync_from_conversation=true at any time.
     """
+    if req.thread_id is None:
+        # If the client didn't provide a thread_id, generate one for them.
+        # This is the common case: a new trip starts a new conversation.
+        req.thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": req.thread_id}}
     snapshot = graph.get_state(config)
 
@@ -141,7 +145,7 @@ def debug_state(thread_id: str, graph=Depends(get_adventure_graph)) -> dict:
 def create_trip(payload: TripCreate, db: Session = Depends(get_db)) -> TripOut:
     """Create a new trip row in the database. Returns the trip's durable id and trip details.
     If the client doesn't provide a thread_id, one is generated automatically."""
-    if payload.thread_id is None:
+    if payload.thread_id is None or payload.thread_id.strip() == "":
         # If the client didn't provide a thread_id, generate one for them.
         # This is the common case: a new trip starts a new conversation.
         payload.thread_id = str(uuid.uuid4())
@@ -190,9 +194,9 @@ def patch_trip(
         snapshot = graph.get_state(config)
         messages = snapshot.values.get("messages", [])
         extracted = extract_trip_from_conversation(messages)
-        # Only write fields the extraction was confident about — None means
-        # "couldn't determine", not "clear this field".
-        fields = {k: v for k, v in extracted.model_dump().items() if v is not None}
+        data = extracted.model_dump()
+        retracted = set(data.pop("retracted_fields", []))
+        fields = {k: v for k, v in data.items() if v is not None or k in retracted}
     else:
         fields = {k: v for k, v in payload.model_dump().items() if v is not None}
 

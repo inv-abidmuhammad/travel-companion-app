@@ -48,7 +48,7 @@ class Trip(Base):
 
     # The join point to LangGraph's checkpointed conversation state —
     # see adventure_graph.get_state({"configurable": {"thread_id": ...}})
-    thread_id: Mapped[str] = mapped_column(String, index=True)
+    thread_id: Mapped[str] = mapped_column(String, unique=True, index=True)
 
     origin: Mapped[str | None] = mapped_column(String, nullable=True)
     destination: Mapped[str | None] = mapped_column(String, nullable=True)

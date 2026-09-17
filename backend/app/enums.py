@@ -10,5 +10,4 @@ import enum
 class TripStatus(str, enum.Enum):
     DRAFT = "draft"
     PLANNED = "planned"
-    COMPLETED = "completed"
     CANCELLED = "cancelled"

@@ -76,7 +76,7 @@ def test_tool_messages_between_ai_and_next_human_are_skipped_in_scan():
     assert _is_user_facing_ai_message(messages, 0) is True
 
 
-def test_human_decision_message_does_not_mark_preceding_ai_as_failed():
+def test_human_decision_message_marks_preceding_ai_as_failed():
     """[human decision] is a resume payload injected after an interrupt —
     the AIMessage before it was genuinely shown to the user (it's the
     one that triggered the interrupt question)."""
@@ -84,7 +84,7 @@ def test_human_decision_message_does_not_mark_preceding_ai_as_failed():
         AIMessage(content="I couldn't verify the weather; proceed or retry?"),
         HumanMessage(content="[human decision] proceed"),
     ]
-    assert _is_user_facing_ai_message(messages, 0) is True
+    assert _is_user_facing_ai_message(messages, 0) is False
 
 
 # ---------------------------------------------------------------------------

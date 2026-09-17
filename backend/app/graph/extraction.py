@@ -73,6 +73,10 @@ class ExtractedTripFields(BaseModel):
             "Null only if no concrete itinerary planning happened at all."
         ),
     )
+    retracted_fields: list[str] = Field(
+        default_factory=list,
+        description="Names of fields the user explicitly retracted without a replacement (e.g. ['destination']). Do not include fields that were simply never mentioned."
+    )
 
 
 def _is_user_facing_ai_message(messages: list, index: int) -> bool:
@@ -96,6 +100,8 @@ def _is_user_facing_ai_message(messages: list, index: int) -> bool:
         if isinstance(nxt, HumanMessage):
             nxt_text = extract_text(nxt.content)
             if is_synthetic(nxt_text):
+                return False
+            elif nxt_text.lower().startswith("[human decision]"):
                 return False
             else:
                 return True

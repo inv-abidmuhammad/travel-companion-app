@@ -5,6 +5,7 @@ one thing so it's easy to test and easy to call from an endpoint or
 (later) from a graph node.
 """
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from .models import Trip, User
 
@@ -39,6 +40,11 @@ def create_trip(
     )
     db.add(trip)
     db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return get_trip_by_thread_id(db, thread_id)  # someone else won the race
     db.refresh(trip)
     return trip
 

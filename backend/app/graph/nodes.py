@@ -287,6 +287,7 @@ def respond_node(state: AdventureState) -> dict:
         text = f"{text}\n\n*Note: {caveat} This wasn't independently verified — treat it as an estimate.*"
 
     return {
+        "messages": [AIMessage(content=text)],
         "final_response": text,
         "validation_attempts": 0,
         "validation_errors": [],
