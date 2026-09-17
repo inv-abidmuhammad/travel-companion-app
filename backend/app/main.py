@@ -68,6 +68,7 @@ def get_adventure_graph(request: Request):
 
 @app.get("/health")
 def health() -> dict:
+    """Liveness check endpoint. Returns 200 OK if the server is running."""
     return {"status": "ok"}
 
 
@@ -138,7 +139,8 @@ def debug_state(thread_id: str, graph=Depends(get_adventure_graph)) -> dict:
 
 @app.post("/trips", response_model=TripOut)
 def create_trip(payload: TripCreate, db: Session = Depends(get_db)) -> TripOut:
-
+    """Create a new trip row in the database. Returns the trip's durable id and trip details.
+    If the client doesn't provide a thread_id, one is generated automatically."""
     if payload.thread_id is None:
         # If the client didn't provide a thread_id, generate one for them.
         # This is the common case: a new trip starts a new conversation.
@@ -157,6 +159,7 @@ def create_trip(payload: TripCreate, db: Session = Depends(get_db)) -> TripOut:
 
 @app.get("/trips/{trip_id}", response_model=TripOut)
 def get_trip(trip_id: str, db: Session = Depends(get_db)) -> TripOut:
+    """Fetch a trip row by its durable id. Returns 404 if not found."""
     trip = crud.get_trip(db, trip_id)
     if trip is None:
         raise HTTPException(status_code=404, detail="Trip not found")
@@ -177,6 +180,8 @@ def patch_trip(
     db: Session = Depends(get_db),
     graph=Depends(get_adventure_graph),
 ) -> TripOut:
+    """Update a trip row by its durable id, syncing via conversation
+    or by manual update. Returns 404 if not found."""
     if sync_from_conversation:
         trip = crud.get_trip(db, trip_id)
         if trip is None:
@@ -199,6 +204,7 @@ def patch_trip(
 
 @app.get("/users/{user_id}/trips", response_model=list[TripOut])
 def list_trips(user_id: str, db: Session = Depends(get_db)) -> list[TripOut]:
+    """List all trips for a given user_id. Returns an empty list if none found."""
     trips = crud.list_trips_for_user(db, user_id)
     return [TripOut.model_validate(t) for t in trips]
 
