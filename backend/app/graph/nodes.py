@@ -17,10 +17,10 @@ know what to change later.
 LLM construction and tool registration live in llm.py.
 The system prompt lives in prompts.py.
 """
+import re
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import interrupt
-
-from app.tools.weather import CONDITIONS
 
 from .llm import TOOLS_BY_NAME, llm_with_tools
 from .prompts import PLANNER_SYSTEM_PROMPT
@@ -64,6 +64,7 @@ def tools_node(state: AdventureState) -> dict:
     """
     last_message: AIMessage = state["messages"][-1]
     results = []
+    state_updates: dict = {}
     for call in last_message.tool_calls:
         tool_fn = TOOLS_BY_NAME.get(call["name"])
         if tool_fn is None:
@@ -76,7 +77,17 @@ def tools_node(state: AdventureState) -> dict:
         results.append(
             ToolMessage(content=str(output), tool_call_id=call["id"], name=call["name"])
         )
-    return {"messages": results}
+        # record_trip_detail is the agent's only way to write a trip slot
+        # into state — it stays a pure function (see trip_details.py), so
+        # applying its output to state is this node's job, same as every
+        # other side effect here.
+        if (
+            call["name"] == "record_trip_detail"
+            and isinstance(output, dict)
+            and output.get("error") is None
+        ):
+            state_updates[output["field"]] = output["value"]
+    return {"messages": results, **state_updates}
 
 
 def route_after_agent(state: AdventureState) -> str:
@@ -102,10 +113,29 @@ def route_after_agent(state: AdventureState) -> str:
 # Phrases that only make sense if the corresponding tool actually ran.
 # This is deliberately a narrow, literal check — not an LLM judging
 # an LLM — so its behavior is predictable and easy to unit test.
-_WEATHER_CLAIM_MARKERS = ["°c", "rain probability", "forecast"] + CONDITIONS
-_BUDGET_CLAIM_MARKERS = ["₹", "rupee", "per day", "per-day", "budget is"]
+#
+# Split into "hard" markers (essentially only occur in a real weather/
+# budget statement) and "soft" markers (common words that are only a
+# reliable signal when they co-occur with a number). Deliberately kept
+# independent of any specific weather provider's condition vocabulary —
+# providers change wording, and this check shouldn't be coupled to it.
+_WEATHER_HARD_MARKERS = ["°c", "°f", "rain probability", "degrees celsius", "degrees fahrenheit", "temperature is", "forecast"]
+_BUDGET_HARD_MARKERS = ["₹", "rupee", "rupees" ,"$", "dollar", "dollars", "€", "euro", "euros", "budget is"]
+_HAS_DIGIT = re.compile(r"\d")
 
 MAX_VALIDATION_RETRIES = 2
+
+
+def _has_weather_claim(text: str) -> bool:
+    if any(marker in text for marker in _WEATHER_HARD_MARKERS) and bool(_HAS_DIGIT.search(text)):
+        return True
+    return False
+
+
+def _has_budget_claim(text: str) -> bool:
+    if any(marker in text for marker in _BUDGET_HARD_MARKERS) and bool(_HAS_DIGIT.search(text)):
+        return True
+    return False
 
 
 def _is_internal_message(msg) -> bool:
@@ -152,9 +182,9 @@ def validate_node(state: AdventureState) -> dict:
             break  # hit the real user message that started this turn
 
     errors = []
-    if any(marker in text for marker in _WEATHER_CLAIM_MARKERS) and "get_weather" not in tools_used:
+    if _has_weather_claim(text) and "get_weather" not in tools_used:
         errors.append("Response describes specific weather conditions without calling get_weather.")
-    if any(marker in text for marker in _BUDGET_CLAIM_MARKERS) and "calculator" not in tools_used:
+    if _has_budget_claim(text) and "calculator" not in tools_used:
         errors.append("Response states specific budget figures without calling calculator.")
 
     attempts = state.get("validation_attempts", 0)
@@ -287,7 +317,6 @@ def respond_node(state: AdventureState) -> dict:
         text = f"{text}\n\n*Note: {caveat} This wasn't independently verified — treat it as an estimate.*"
 
     return {
-        "messages": [AIMessage(content=text)],
         "final_response": text,
         "validation_attempts": 0,
         "validation_errors": [],

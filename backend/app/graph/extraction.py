@@ -49,6 +49,13 @@ class ExtractedTripFields(BaseModel):
             "Null if not finalized."
         ),
     )
+    departure_date: str | None = Field(
+        None,
+        description=(
+            "Planned departure date as YYYY-MM-DD, if clearly stated and not retracted. "
+            "Null otherwise."
+        ),
+    )
     budget: float | None = Field(
         None,
         description=(

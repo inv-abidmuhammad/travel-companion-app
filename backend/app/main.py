@@ -72,6 +72,33 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+
+# Trip fields that also live in graph state (see AdventureState) and can be
+# carried over when a conversation is resumed on a fresh graph checkpoint.
+_RESUMABLE_TRIP_FIELDS = (
+    "origin", "destination", "departure_date", "duration_days", "budget", "itinerary_text",
+)
+
+
+def _backfill_state_from_trip(graph, config: dict, state_values: dict, trip) -> None:
+    """Fill gaps in graph state from the trip row — never overwrite.
+
+    Only ever writes a field that is currently unset in graph state, so
+    this is safe to call on every turn: it can't clobber a value the
+    agent set this session but that hasn't been PATCHed back to the
+    trip row yet, and it's what makes resuming an older conversation
+    (or one that predates these state fields existing at all) not lose
+    already-known trip details.
+    """
+    updates = {
+        field: getattr(trip, field)
+        for field in _RESUMABLE_TRIP_FIELDS
+        if state_values.get(field) is None and getattr(trip, field, None) is not None
+    }
+    if updates:
+        graph.update_state(config, updates)
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
@@ -87,12 +114,20 @@ def chat(
     The trip_id is returned in every response so the client can call
     PATCH /trips/{trip_id}?sync_from_conversation=true at any time.
     """
-    if req.thread_id is None:
+    if req.thread_id is None or req.thread_id.strip() == "":
         # If the client didn't provide a thread_id, generate one for them.
         # This is the common case: a new trip starts a new conversation.
         req.thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": req.thread_id}}
     snapshot = graph.get_state(config)
+
+    # Auto-create a trip row the first time this thread is used.
+    # On subsequent messages the existing trip is returned unchanged.
+    trip = crud.get_trip_by_thread_id(db, req.thread_id)
+    if trip is None:
+        trip = crud.create_trip(db, user_id=req.user_id, thread_id=req.thread_id)
+    else:
+        _backfill_state_from_trip(graph, config, snapshot.values, trip)
 
     if snapshot.next:
         result = graph.invoke(Command(resume=req.message), config=config)
@@ -101,12 +136,6 @@ def chat(
             {"messages": [HumanMessage(content=req.message)], "user_id": req.user_id},
             config=config,
         )
-
-    # Auto-create a trip row the first time this thread is used.
-    # On subsequent messages the existing trip is returned unchanged.
-    trip = crud.get_trip_by_thread_id(db, req.thread_id)
-    if trip is None:
-        trip = crud.create_trip(db, user_id=req.user_id, thread_id=req.thread_id)
 
     if "__interrupt__" in result:
         question = result["__interrupt__"][0].value.get("question", "Please respond.")
@@ -155,6 +184,7 @@ def create_trip(payload: TripCreate, db: Session = Depends(get_db)) -> TripOut:
         thread_id=payload.thread_id,
         origin=payload.origin,
         destination=payload.destination,
+        departure_date=payload.departure_date,
         budget=payload.budget,
         duration_days=payload.duration_days,
     )

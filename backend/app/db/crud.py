@@ -26,6 +26,7 @@ def create_trip(
     thread_id: str,
     origin: str | None = None,
     destination: str | None = None,
+    departure_date: str | None = None,
     budget: float | None = None,
     duration_days: int | None = None,
 ) -> Trip:
@@ -35,11 +36,11 @@ def create_trip(
         thread_id=thread_id,
         origin=origin,
         destination=destination,
+        departure_date=departure_date,
         budget=budget,
         duration_days=duration_days,
     )
     db.add(trip)
-    db.commit()
     try:
         db.commit()
     except IntegrityError:

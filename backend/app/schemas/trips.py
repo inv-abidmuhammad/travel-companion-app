@@ -23,6 +23,11 @@ class TripCreate(BaseModel):
         description="Destination of the trip."
     )
 
+    departure_date: str | None = Field(
+        default=None,
+        description="Planned departure date of the trip, as YYYY-MM-DD."
+    )
+
     budget: float | None = Field(
         default=None,
         description="Maximum or planned budget for the trip."
@@ -43,6 +48,11 @@ class TripUpdate(BaseModel):
     destination: str | None = Field(
         default=None,
         description="Updated destination of the trip."
+    )
+
+    departure_date: str | None = Field(
+        default=None,
+        description="Updated planned departure date of the trip, as YYYY-MM-DD."
     )
 
     budget: float | None = Field(
@@ -87,6 +97,11 @@ class TripOut(BaseModel):
     destination: str | None = Field(
         default=None,
         description="Destination of the trip."
+    )
+
+    departure_date: str | None = Field(
+        default=None,
+        description="Planned departure date of the trip, as YYYY-MM-DD."
     )
 
     budget: float | None = Field(
