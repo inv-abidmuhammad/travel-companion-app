@@ -77,7 +77,7 @@ class TripUpdate(BaseModel):
 
 
 class TripOut(BaseModel):
-    id: str = Field(
+    trip_id: str = Field(
         description="Unique identifier of the trip."
     )
 

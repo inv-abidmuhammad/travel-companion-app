@@ -1,19 +1,33 @@
 """
-Conversation-to-trip extraction.
+Conversation-to-itinerary extraction.
 
 `extract_trip_from_conversation(messages)` reads the full message list
 for a conversation thread and uses an LLM with structured output to pull
-out whatever trip planning data has been settled on so far.
+out the itinerary that's been discussed so far.
+
+origin/destination/departure_date/duration_days/budget are deliberately
+NOT extracted here — those are recorded directly by the
+record_trip_detail tool (see trip_details.py) the moment the user
+confirms them, with real type/format validation and an error path back
+to the agent on a bad value. That's ground truth; re-deriving it from
+prose after the fact can only lose information (e.g. a date the agent
+resolved internally but only ever paraphrased back to the user, like
+"mid-October" instead of the literal 2026-10-15). Callers should read
+those five fields straight from graph state instead — see PATCH
+/trips/{trip_id} in main.py.
+
+itinerary_text is the one exception: there's no tool that writes it
+into state, so it only ever exists in the conversation's prose, which
+is what this function is for.
 
 Design choices:
 - The function takes a plain message list, not a thread_id, so it stays
   pure and easy to unit test without a running database or graph.
 - The caller (the PATCH endpoint) is responsible for fetching the messages
   and writing the result back to the trip row.
-- Every field is Optional — the function returns only what it can
-  determine with confidence from the *latest state* of the conversation.
-  Fields that were mentioned but later retracted without replacement come
-  back as None rather than the stale value.
+- itinerary_text reflects only the *latest state* of the conversation —
+  if part of it was discussed and later changed or dropped, only the
+  final version should come back.
 """
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
@@ -26,51 +40,10 @@ from .utils import extract_text, is_synthetic
 class ExtractedTripFields(BaseModel):
     """The structured shape the LLM fills in.
 
-    Kept separate from TripUpdate intentionally: TripUpdate includes
-    `status`, which is a business/workflow field — not something to
-    infer from conversation. This schema covers only the planning data
-    that naturally emerges from a chat session. The field descriptions
-    here are also extraction-oriented ("if clearly stated and not
-    retracted") rather than PATCH-oriented ("updated value of X").
+    Just one field: see the module docstring for why the other trip
+    fields aren't extracted here anymore.
     """
 
-    origin: str | None = Field(
-        None,
-        description=(
-            "Starting location of the trip, if the user clearly stated it "
-            "and did not later retract it. Null otherwise."
-        ),
-    )
-    destination: str | None = Field(
-        None,
-        description=(
-            "Trip destination, if agreed upon and not retracted. "
-            "Use the most specific place name mentioned (e.g. 'Manali' not 'the mountains'). "
-            "Null if not finalized."
-        ),
-    )
-    departure_date: str | None = Field(
-        None,
-        description=(
-            "Planned departure date as YYYY-MM-DD, if clearly stated and not retracted. "
-            "Null otherwise."
-        ),
-    )
-    budget: float | None = Field(
-        None,
-        description=(
-            "Total trip budget as a plain number (no currency symbols). "
-            "Null if not stated or retracted."
-        ),
-    )
-    duration_days: int | None = Field(
-        None,
-        description=(
-            "Trip duration in whole days as an integer "
-            "(e.g. 7 for 'a week', 3 for 'a long weekend'). "
-            "Null if not stated."
-        ),
-    )
     itinerary_text: str | None = Field(
         None,
         description=(
@@ -79,10 +52,6 @@ class ExtractedTripFields(BaseModel):
             "discussed and not later removed. "
             "Null only if no concrete itinerary planning happened at all."
         ),
-    )
-    retracted_fields: list[str] = Field(
-        default_factory=list,
-        description="Names of fields the user explicitly retracted without a replacement (e.g. ['destination']). Do not include fields that were simply never mentioned."
     )
 
 
@@ -153,16 +122,15 @@ def _format_conversation(messages: list) -> str:
 
 
 def extract_trip_from_conversation(messages: list) -> ExtractedTripFields:
-    """Given the LangChain message list for a thread, extract whatever
-    trip planning fields can be determined from the conversation.
+    """Given the LangChain message list for a thread, extract the
+    itinerary discussed so far.
 
-    Returns an ExtractedTripFields instance. Fields that couldn't be
-    determined (or were retracted without replacement) are None — callers
-    should filter those out before writing to the database so that a
-    partial extraction doesn't accidentally overwrite previously saved data.
+    Returns an ExtractedTripFields instance. itinerary_text is None if
+    it couldn't be determined — callers should treat that as "leave
+    the existing value alone," not "clear it."
 
-    Returns an empty ExtractedTripFields (all None) if there are no
-    messages or no meaningful conversation yet.
+    Returns an empty ExtractedTripFields (itinerary_text=None) if there
+    are no messages or no meaningful conversation yet.
     """
     if not messages:
         return ExtractedTripFields()

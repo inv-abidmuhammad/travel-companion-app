@@ -6,9 +6,24 @@ class ChatRequest(BaseModel):
         description="The message sent by the user to the chatbot."
     )
 
-    thread_id: str = Field(
-        default="default",
-        description="Unique identifier for the conversation thread."
+    thread_id: str | None = Field(
+        default=None,
+        description=(
+            "Identifier of the conversation thread to continue. Omit to "
+            "start a new conversation, or pass trip_id instead to resume "
+            "an existing trip's conversation without knowing its "
+            "thread_id."
+        )
+    )
+
+    trip_id: str | None = Field(
+        default=None,
+        description=(
+            "Identifier of an existing trip whose conversation to "
+            "continue. Alternative to thread_id — typically what a "
+            "client has after calling GET /trips/{trip_id}/resume. If "
+            "both are given, trip_id takes precedence."
+        )
     )
 
     user_id: str = Field(

@@ -167,17 +167,17 @@ dumping a bare list of options.
 
 
 EXTRACTION_SYSTEM_PROMPT = """\
-You extract structured trip planning data from a travel planning conversation.
+You extract the itinerary from a travel planning conversation.
 
-Read the conversation below and fill in the fields based on the LATEST agreed state.
+Read the conversation below and write out the itinerary as it stands at the
+end of the conversation — the LATEST agreed state, not everything ever
+mentioned along the way.
 
 Rules:
-1. Only extract values explicitly stated — do not guess or infer.
-2. If the user mentioned a value but later retracted it without a replacement,
-   set that field to null.
-3. budget must be a plain number (e.g. 25000, not "₹25,000").
-4. duration_days must be a whole number of days.
-5. For itinerary_text: write the itinerary as it stands at the end of the
-   conversation. Include all days and activities still on the plan.
-   Set to null only if no day-by-day or activity planning occurred at all.\
+1. Only include day-by-day or activity-level itinerary content that was
+   actually discussed — do not invent or infer days or activities.
+2. If part of the itinerary was proposed and later changed or dropped,
+   reflect only the final version, not the discarded one.
+3. Set itinerary_text to null if no concrete day-by-day or activity-level
+   planning occurred at all.\
 """

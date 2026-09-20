@@ -53,9 +53,12 @@ def record_trip_detail(field: str, value: str) -> dict:
             return {"field": field, "value": None, "error": f"'{value}' is not a valid number."}
     elif field == "departure_date":
         try:
-            datetime.strptime(value, "%Y-%m-%d")
+            departure_datetime = datetime.strptime(value, "%Y-%m-%d")
         except (TypeError, ValueError):
             return {"field": field, "value": None, "error": f"'{value}' is not in YYYY-MM-DD format."}
+        # if date is in the past, we reject it as well
+        if departure_datetime.date() < datetime.now().date():
+            return {"field": field, "value": None, "error": f"'{value}' is in the past."}
         coerced = value
     else:  # origin, destination
         coerced = value

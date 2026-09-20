@@ -43,7 +43,7 @@ class User(Base):
 class Trip(Base):
     __tablename__ = "trips"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    trip_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
 
     # The join point to LangGraph's checkpointed conversation state —

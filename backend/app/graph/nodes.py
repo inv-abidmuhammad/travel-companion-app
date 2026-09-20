@@ -87,6 +87,23 @@ def tools_node(state: AdventureState) -> dict:
             and output.get("error") is None
         ):
             state_updates[output["field"]] = output["value"]
+            # if any of the 3 change, we invalidate weather data
+            if output["field"] in {
+                "destination",
+                "departure_date",
+                "duration_days",
+            }:
+                state_updates["weather_data"] = None
+        # Persist a successful weather lookup so it's actually readable
+        # from state afterward — previously only the invalidation above
+        # ever touched weather_data, so it was written to None on every
+        # detail change but never written to a real value.
+        elif (
+            call["name"] == "get_weather"
+            and isinstance(output, dict)
+            and output.get("error") is None
+        ):
+            state_updates["weather_data"] = output
     return {"messages": results, **state_updates}
 
 

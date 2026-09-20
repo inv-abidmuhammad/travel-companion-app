@@ -79,6 +79,13 @@ _RESUMABLE_TRIP_FIELDS = (
     "origin", "destination", "departure_date", "duration_days", "budget", "itinerary_text",
 )
 
+# The subset of the above that record_trip_detail actually writes into
+# graph state with real validation — these are read straight from state
+# on sync rather than re-derived from prose. itinerary_text is excluded:
+# nothing writes it into state, so it's still sourced from the
+# conversation itself (see extraction.py).
+_STATE_SOURCED_TRIP_FIELDS = tuple(f for f in _RESUMABLE_TRIP_FIELDS if f != "itinerary_text")
+
 
 def _backfill_state_from_trip(graph, config: dict, state_values: dict, trip) -> None:
     """Fill gaps in graph state from the trip row — never overwrite.
@@ -142,14 +149,14 @@ def chat(
         return ChatResponse(
             reply=question,
             thread_id=req.thread_id,
-            trip_id=trip.id,
+            trip_id=trip.trip_id,
             awaiting_confirmation=True,
         )
 
     return ChatResponse(
         reply=result["final_response"],
         thread_id=req.thread_id,
-        trip_id=trip.id,
+        trip_id=trip.trip_id,
     )
 
 
@@ -167,6 +174,13 @@ def debug_state(thread_id: str, graph=Depends(get_adventure_graph)) -> dict:
         "validation_attempts": values.get("validation_attempts", 0),
         "validation_errors": values.get("validation_errors", []),
         "paused_at": list(snapshot.next),
+        "origin": values.get("origin"),
+        "destination": values.get("destination"),
+        "departure_date": values.get("deaparture_date"),
+        "duration_days": values.get("duration_days"),
+        "budget": values.get("budget"),
+        "weather_data": values.get("weather_data", {}),
+        "departure_date": values.get("departure_date")
     }
 
 
@@ -222,11 +236,26 @@ def patch_trip(
             raise HTTPException(status_code=404, detail="Trip not found")
         config = {"configurable": {"thread_id": trip.thread_id}}
         snapshot = graph.get_state(config)
-        messages = snapshot.values.get("messages", [])
+        values = snapshot.values
+
+        # origin/destination/departure_date/duration_days/budget are
+        # ground truth the moment record_trip_detail validates and
+        # writes them — read straight from graph state instead of
+        # re-deriving them from prose, which can only lose information
+        # (e.g. a date the agent resolved internally but only ever
+        # paraphrased back to the user, like "mid-October").
+        fields = {
+            field: values[field]
+            for field in _STATE_SOURCED_TRIP_FIELDS
+            if values.get(field) is not None
+        }
+
+        # itinerary_text has no dedicated tool/state slot, so it's the
+        # one field that still has to come from the conversation itself.
+        messages = values.get("messages", [])
         extracted = extract_trip_from_conversation(messages)
-        data = extracted.model_dump()
-        retracted = set(data.pop("retracted_fields", []))
-        fields = {k: v for k, v in data.items() if v is not None or k in retracted}
+        if extracted.itinerary_text is not None:
+            fields["itinerary_text"] = extracted.itinerary_text
     else:
         fields = {k: v for k, v in payload.model_dump().items() if v is not None}
 
@@ -259,7 +288,7 @@ def resume_trip(trip_id: str, db: Session = Depends(get_db), graph=Depends(get_a
     values = snapshot.values
 
     return {
-        "trip_id": trip.id,
+        "trip_id": trip.trip_id,
         "thread_id": trip.thread_id,
         "status": trip.status,
         "origin": trip.origin,
@@ -285,7 +314,7 @@ def list_trip_messages(trip_id: str, db: Session = Depends(get_db), graph=Depend
     messages = [normalize_message(m) for m in messages if not isinstance(m, ToolMessage)]
 
     return {
-        "trip_id": trip.id,
+        "trip_id": trip.trip_id,
         "message_count": len(messages),
         "messages": messages,
     }

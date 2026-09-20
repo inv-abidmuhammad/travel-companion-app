@@ -39,6 +39,9 @@ class AdventureState(TypedDict, total=False):
     duration_days: int | None
     budget: float | None
 
+    # ── weather data ───────────────────────────────────────────────────────────
+    weather_data: dict | None
+
     # ── itinerary ─────────────────────────────────────────────────────────────
     itinerary_text: str | None
     itinerary_confirmed: bool
