@@ -72,6 +72,40 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+
+# Trip fields that also live in graph state (see AdventureState) and can be
+# carried over when a conversation is resumed on a fresh graph checkpoint.
+_RESUMABLE_TRIP_FIELDS = (
+    "origin", "destination", "departure_date", "duration_days", "budget", "itinerary_text",
+)
+
+# The subset of the above that record_trip_detail actually writes into
+# graph state with real validation — these are read straight from state
+# on sync rather than re-derived from prose. itinerary_text is excluded:
+# nothing writes it into state, so it's still sourced from the
+# conversation itself (see extraction.py).
+_STATE_SOURCED_TRIP_FIELDS = tuple(f for f in _RESUMABLE_TRIP_FIELDS if f != "itinerary_text")
+
+
+def _backfill_state_from_trip(graph, config: dict, state_values: dict, trip) -> None:
+    """Fill gaps in graph state from the trip row — never overwrite.
+
+    Only ever writes a field that is currently unset in graph state, so
+    this is safe to call on every turn: it can't clobber a value the
+    agent set this session but that hasn't been PATCHed back to the
+    trip row yet, and it's what makes resuming an older conversation
+    (or one that predates these state fields existing at all) not lose
+    already-known trip details.
+    """
+    updates = {
+        field: getattr(trip, field)
+        for field in _RESUMABLE_TRIP_FIELDS
+        if state_values.get(field) is None and getattr(trip, field, None) is not None
+    }
+    if updates:
+        graph.update_state(config, updates)
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
@@ -87,8 +121,20 @@ def chat(
     The trip_id is returned in every response so the client can call
     PATCH /trips/{trip_id}?sync_from_conversation=true at any time.
     """
+    if req.thread_id is None or req.thread_id.strip() == "":
+        # If the client didn't provide a thread_id, generate one for them.
+        # This is the common case: a new trip starts a new conversation.
+        req.thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": req.thread_id}}
     snapshot = graph.get_state(config)
+
+    # Auto-create a trip row the first time this thread is used.
+    # On subsequent messages the existing trip is returned unchanged.
+    trip = crud.get_trip_by_thread_id(db, req.thread_id)
+    if trip is None:
+        trip = crud.create_trip(db, user_id=req.user_id, thread_id=req.thread_id)
+    else:
+        _backfill_state_from_trip(graph, config, snapshot.values, trip)
 
     if snapshot.next:
         result = graph.invoke(Command(resume=req.message), config=config)
@@ -98,25 +144,19 @@ def chat(
             config=config,
         )
 
-    # Auto-create a trip row the first time this thread is used.
-    # On subsequent messages the existing trip is returned unchanged.
-    trip = crud.get_trip_by_thread_id(db, req.thread_id)
-    if trip is None:
-        trip = crud.create_trip(db, user_id=req.user_id, thread_id=req.thread_id)
-
     if "__interrupt__" in result:
         question = result["__interrupt__"][0].value.get("question", "Please respond.")
         return ChatResponse(
             reply=question,
             thread_id=req.thread_id,
-            trip_id=trip.id,
+            trip_id=trip.trip_id,
             awaiting_confirmation=True,
         )
 
     return ChatResponse(
         reply=result["final_response"],
         thread_id=req.thread_id,
-        trip_id=trip.id,
+        trip_id=trip.trip_id,
     )
 
 
@@ -134,6 +174,13 @@ def debug_state(thread_id: str, graph=Depends(get_adventure_graph)) -> dict:
         "validation_attempts": values.get("validation_attempts", 0),
         "validation_errors": values.get("validation_errors", []),
         "paused_at": list(snapshot.next),
+        "origin": values.get("origin"),
+        "destination": values.get("destination"),
+        "departure_date": values.get("deaparture_date"),
+        "duration_days": values.get("duration_days"),
+        "budget": values.get("budget"),
+        "weather_data": values.get("weather_data", {}),
+        "departure_date": values.get("departure_date")
     }
 
 
@@ -141,7 +188,7 @@ def debug_state(thread_id: str, graph=Depends(get_adventure_graph)) -> dict:
 def create_trip(payload: TripCreate, db: Session = Depends(get_db)) -> TripOut:
     """Create a new trip row in the database. Returns the trip's durable id and trip details.
     If the client doesn't provide a thread_id, one is generated automatically."""
-    if payload.thread_id is None:
+    if payload.thread_id is None or payload.thread_id.strip() == "":
         # If the client didn't provide a thread_id, generate one for them.
         # This is the common case: a new trip starts a new conversation.
         payload.thread_id = str(uuid.uuid4())
@@ -151,6 +198,7 @@ def create_trip(payload: TripCreate, db: Session = Depends(get_db)) -> TripOut:
         thread_id=payload.thread_id,
         origin=payload.origin,
         destination=payload.destination,
+        departure_date=payload.departure_date,
         budget=payload.budget,
         duration_days=payload.duration_days,
     )
@@ -188,11 +236,26 @@ def patch_trip(
             raise HTTPException(status_code=404, detail="Trip not found")
         config = {"configurable": {"thread_id": trip.thread_id}}
         snapshot = graph.get_state(config)
-        messages = snapshot.values.get("messages", [])
+        values = snapshot.values
+
+        # origin/destination/departure_date/duration_days/budget are
+        # ground truth the moment record_trip_detail validates and
+        # writes them — read straight from graph state instead of
+        # re-deriving them from prose, which can only lose information
+        # (e.g. a date the agent resolved internally but only ever
+        # paraphrased back to the user, like "mid-October").
+        fields = {
+            field: values[field]
+            for field in _STATE_SOURCED_TRIP_FIELDS
+            if values.get(field) is not None
+        }
+
+        # itinerary_text has no dedicated tool/state slot, so it's the
+        # one field that still has to come from the conversation itself.
+        messages = values.get("messages", [])
         extracted = extract_trip_from_conversation(messages)
-        # Only write fields the extraction was confident about — None means
-        # "couldn't determine", not "clear this field".
-        fields = {k: v for k, v in extracted.model_dump().items() if v is not None}
+        if extracted.itinerary_text is not None:
+            fields["itinerary_text"] = extracted.itinerary_text
     else:
         fields = {k: v for k, v in payload.model_dump().items() if v is not None}
 
@@ -225,11 +288,12 @@ def resume_trip(trip_id: str, db: Session = Depends(get_db), graph=Depends(get_a
     values = snapshot.values
 
     return {
-        "trip_id": trip.id,
+        "trip_id": trip.trip_id,
         "thread_id": trip.thread_id,
         "status": trip.status,
         "origin": trip.origin,
         "destination": trip.destination,
+        "departure_date": trip.departure_date,
         "budget": trip.budget,
         "duration_days": trip.duration_days,
         "message_count": len(values.get("messages", [])),
@@ -251,7 +315,7 @@ def list_trip_messages(trip_id: str, db: Session = Depends(get_db), graph=Depend
     messages = [normalize_message(m) for m in messages if not isinstance(m, ToolMessage)]
 
     return {
-        "trip_id": trip.id,
+        "trip_id": trip.trip_id,
         "message_count": len(messages),
         "messages": messages,
     }

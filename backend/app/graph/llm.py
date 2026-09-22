@@ -13,11 +13,14 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.config import get_settings
 from app.tools.calculator import calculator
+from app.tools.current_date import get_current_date
+from app.tools.places import search_place_info
+from app.tools.trip_details import record_trip_detail
 from app.tools.weather import get_weather
 
 _settings = get_settings()
 
-TOOLS = [calculator, get_weather]
+TOOLS = [calculator, get_weather, get_current_date, record_trip_detail, search_place_info]
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 
 llm = ChatGoogleGenerativeAI(

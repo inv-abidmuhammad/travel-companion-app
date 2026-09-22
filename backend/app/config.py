@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=BACKEND_DIR / ".env", extra="ignore")
 
     google_api_key: str = ""
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3.1-flash-lite"
 
     # Bare psycopg-style DSN, e.g. "postgresql://user:pass@host:5432/db" —
     # this is the form both langgraph-checkpoint-postgres AND (via the

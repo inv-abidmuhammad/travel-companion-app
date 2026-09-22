@@ -26,3 +26,22 @@ class AdventureState(TypedDict, total=False):
     # ── human-in-the-loop ────────────────────────────────────────────────────
     # human_input_node writes this; route_after_human_input and respond_node read it.
     user_wants_retry: bool
+
+    # ── trip slots ────────────────────────────────────────────────────────────
+    # Written by tools_node whenever the agent calls record_trip_detail;
+    # read by the (Phase 2) missing-fields router and the itinerary builder.
+    # None means "not yet confirmed by the user" — never inferred from raw
+    # text, only ever set via the tool call, same reasoning as validate_node
+    # checking tool calls rather than guessing from phrasing.
+    origin: str | None
+    destination: str | None
+    departure_date: str | None  # YYYY-MM-DD
+    duration_days: int | None
+    budget: float | None
+
+    # ── weather data ───────────────────────────────────────────────────────────
+    weather_data: dict | None
+
+    # ── itinerary ─────────────────────────────────────────────────────────────
+    itinerary_text: str | None
+    itinerary_confirmed: bool

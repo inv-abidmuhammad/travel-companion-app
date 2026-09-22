@@ -1,10 +1,11 @@
 """
 Graph nodes.
 
-Eight functions, all written by hand — no `ToolNode`, no
+Nine functions, all written by hand — no `ToolNode`, no
 `tools_condition`. Seeing the mechanics once makes it much easier to
 know what to change later.
 
+  check_stale_details_node  clears a departure_date that's now in the past
   agent_node             the LLM, bound to tools, decides what to do next
   tools_node             runs whatever tools the agent asked for
   route_after_agent      decides: loop back to tools, or move to validate
@@ -17,10 +18,11 @@ know what to change later.
 LLM construction and tool registration live in llm.py.
 The system prompt lives in prompts.py.
 """
+import re
+from datetime import datetime
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import interrupt
-
-from app.tools.weather import CONDITIONS
 
 from .llm import TOOLS_BY_NAME, llm_with_tools
 from .prompts import PLANNER_SYSTEM_PROMPT
@@ -29,8 +31,70 @@ from .utils import extract_text, is_synthetic
 
 
 # ---------------------------------------------------------------------------
+# stale-details node
+# ---------------------------------------------------------------------------
+
+def check_stale_details_node(state: AdventureState) -> dict:
+    """Deterministic guardrail, run once at the start of every fresh
+    turn — see graph.py: it's the entry point, so Command(resume=...)
+    answers to an interrupt() skip it entirely and only a genuinely
+    new HumanMessage triggers it.
+
+    record_trip_detail (trip_details.py) only validates a departure_date
+    against "today" at the moment it's written — it has no way to know
+    the clock keeps moving after that. A date recorded as valid can go
+    stale if the user disappears and comes back later, and nothing else
+    ever re-checks it: the agent has no reliable way to notice on its
+    own, since it only ever reconstructs state from re-reading the
+    conversation transcript, and old messages give no indication the
+    date they mention has since passed.
+
+    If departure_date is now in the past, clears it (and weather_data,
+    which is scoped to that date and meaningless without it) and
+    injects a synthetic nudge — same [validation check] convention
+    validate_node uses — so the agent asks for it again naturally
+    instead of silently planning around a dead date.
+    """
+    departure_date = state.get("departure_date")
+    if not departure_date:
+        return {}
+
+    try:
+        is_stale = datetime.strptime(departure_date, "%Y-%m-%d").date() < datetime.now().date()
+    except (TypeError, ValueError):
+        return {}  # malformed value shouldn't have gotten this far, but don't crash the turn over it
+
+    if not is_stale:
+        return {}
+
+    nudge = HumanMessage(
+        content=(
+            "[validation check] This is an internal message. The previously recorded "
+            f"departure_date ({departure_date}) has now passed and has been cleared. "
+            "Ask the user for a new departure date before proceeding, naturally, as if "
+            "it hadn't been confirmed yet — without mentioning this note, the old date, "
+            "or that anything was cleared."
+        )
+    )
+    return {
+        "departure_date": None,
+        "weather_data": None,
+        "messages": [nudge],
+    }
+
+
+# ---------------------------------------------------------------------------
 # agent node
 # ---------------------------------------------------------------------------
+
+def _trip_state_snapshot(state: AdventureState) -> SystemMessage:
+    fields = ("origin", "destination", "departure_date", "duration_days", "budget")
+    parts = [f"{f}={state[f]!r}" if state.get(f) is not None else f"{f}=not yet confirmed" for f in fields]
+    parts.append(
+        "weather_data=" + ("already checked, still valid" if state.get("weather_data") else "not yet checked")
+    )
+    return SystemMessage(content="[trip state] " + ", ".join(parts))
+
 
 def agent_node(state: AdventureState) -> dict:
     """The router+planner, merged: one LLM call that sees full history
@@ -40,6 +104,7 @@ def agent_node(state: AdventureState) -> dict:
     messages = state["messages"]
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=PLANNER_SYSTEM_PROMPT), *messages]
+    messages = [*messages, _trip_state_snapshot(state)]
     response: AIMessage = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
@@ -64,6 +129,7 @@ def tools_node(state: AdventureState) -> dict:
     """
     last_message: AIMessage = state["messages"][-1]
     results = []
+    state_updates: dict = {}
     for call in last_message.tool_calls:
         tool_fn = TOOLS_BY_NAME.get(call["name"])
         if tool_fn is None:
@@ -76,7 +142,24 @@ def tools_node(state: AdventureState) -> dict:
         results.append(
             ToolMessage(content=str(output), tool_call_id=call["id"], name=call["name"])
         )
-    return {"messages": results}
+        # record_trip_detail is the agent's only way to write a trip slot
+        # into state — it stays a pure function (see trip_details.py), so
+        # applying its output to state is this node's job, same as every
+        # other side effect here.
+        if (
+            call["name"] == "record_trip_detail"
+            and isinstance(output, dict)
+            and output.get("error") is None
+        ):
+            state_updates[output["field"]] = output["value"]
+            # if any of the 3 change, we invalidate weather data
+            if output["field"] in {
+                "destination",
+                "departure_date",
+                "duration_days",
+            }:
+                state_updates["weather_data"] = None
+    return {"messages": results, **state_updates}
 
 
 def route_after_agent(state: AdventureState) -> str:
@@ -102,10 +185,29 @@ def route_after_agent(state: AdventureState) -> str:
 # Phrases that only make sense if the corresponding tool actually ran.
 # This is deliberately a narrow, literal check — not an LLM judging
 # an LLM — so its behavior is predictable and easy to unit test.
-_WEATHER_CLAIM_MARKERS = ["°c", "rain probability", "forecast"] + CONDITIONS
-_BUDGET_CLAIM_MARKERS = ["₹", "rupee", "per day", "per-day", "budget is"]
+#
+# Split into "hard" markers (essentially only occur in a real weather/
+# budget statement) and "soft" markers (common words that are only a
+# reliable signal when they co-occur with a number). Deliberately kept
+# independent of any specific weather provider's condition vocabulary —
+# providers change wording, and this check shouldn't be coupled to it.
+_WEATHER_HARD_MARKERS = ["°c", "°f", "rain probability", "degrees celsius", "degrees fahrenheit", "temperature is", "forecast"]
+_BUDGET_HARD_MARKERS = ["₹", "rupee", "rupees" ,"$", "dollar", "dollars", "€", "euro", "euros", "budget is"]
+_HAS_DIGIT = re.compile(r"\d")
 
 MAX_VALIDATION_RETRIES = 2
+
+
+def _has_weather_claim(text: str) -> bool:
+    if any(marker in text for marker in _WEATHER_HARD_MARKERS) and bool(_HAS_DIGIT.search(text)):
+        return True
+    return False
+
+
+def _has_budget_claim(text: str) -> bool:
+    if any(marker in text for marker in _BUDGET_HARD_MARKERS) and bool(_HAS_DIGIT.search(text)):
+        return True
+    return False
 
 
 def _is_internal_message(msg) -> bool:
@@ -152,9 +254,9 @@ def validate_node(state: AdventureState) -> dict:
             break  # hit the real user message that started this turn
 
     errors = []
-    if any(marker in text for marker in _WEATHER_CLAIM_MARKERS) and "get_weather" not in tools_used:
+    if _has_weather_claim(text) and "get_weather" not in tools_used:
         errors.append("Response describes specific weather conditions without calling get_weather.")
-    if any(marker in text for marker in _BUDGET_CLAIM_MARKERS) and "calculator" not in tools_used:
+    if _has_budget_claim(text) and "calculator" not in tools_used:
         errors.append("Response states specific budget figures without calling calculator.")
 
     attempts = state.get("validation_attempts", 0)
