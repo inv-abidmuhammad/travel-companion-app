@@ -293,6 +293,7 @@ def resume_trip(trip_id: str, db: Session = Depends(get_db), graph=Depends(get_a
         "status": trip.status,
         "origin": trip.origin,
         "destination": trip.destination,
+        "departure_date": trip.departure_date,
         "budget": trip.budget,
         "duration_days": trip.duration_days,
         "message_count": len(values.get("messages", [])),

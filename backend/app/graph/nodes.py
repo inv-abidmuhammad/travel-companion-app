@@ -1,10 +1,11 @@
 """
 Graph nodes.
 
-Eight functions, all written by hand — no `ToolNode`, no
+Nine functions, all written by hand — no `ToolNode`, no
 `tools_condition`. Seeing the mechanics once makes it much easier to
 know what to change later.
 
+  check_stale_details_node  clears a departure_date that's now in the past
   agent_node             the LLM, bound to tools, decides what to do next
   tools_node             runs whatever tools the agent asked for
   route_after_agent      decides: loop back to tools, or move to validate
@@ -18,6 +19,7 @@ LLM construction and tool registration live in llm.py.
 The system prompt lives in prompts.py.
 """
 import re
+from datetime import datetime
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import interrupt
@@ -29,8 +31,70 @@ from .utils import extract_text, is_synthetic
 
 
 # ---------------------------------------------------------------------------
+# stale-details node
+# ---------------------------------------------------------------------------
+
+def check_stale_details_node(state: AdventureState) -> dict:
+    """Deterministic guardrail, run once at the start of every fresh
+    turn — see graph.py: it's the entry point, so Command(resume=...)
+    answers to an interrupt() skip it entirely and only a genuinely
+    new HumanMessage triggers it.
+
+    record_trip_detail (trip_details.py) only validates a departure_date
+    against "today" at the moment it's written — it has no way to know
+    the clock keeps moving after that. A date recorded as valid can go
+    stale if the user disappears and comes back later, and nothing else
+    ever re-checks it: the agent has no reliable way to notice on its
+    own, since it only ever reconstructs state from re-reading the
+    conversation transcript, and old messages give no indication the
+    date they mention has since passed.
+
+    If departure_date is now in the past, clears it (and weather_data,
+    which is scoped to that date and meaningless without it) and
+    injects a synthetic nudge — same [validation check] convention
+    validate_node uses — so the agent asks for it again naturally
+    instead of silently planning around a dead date.
+    """
+    departure_date = state.get("departure_date")
+    if not departure_date:
+        return {}
+
+    try:
+        is_stale = datetime.strptime(departure_date, "%Y-%m-%d").date() < datetime.now().date()
+    except (TypeError, ValueError):
+        return {}  # malformed value shouldn't have gotten this far, but don't crash the turn over it
+
+    if not is_stale:
+        return {}
+
+    nudge = HumanMessage(
+        content=(
+            "[validation check] This is an internal message. The previously recorded "
+            f"departure_date ({departure_date}) has now passed and has been cleared. "
+            "Ask the user for a new departure date before proceeding, naturally, as if "
+            "it hadn't been confirmed yet — without mentioning this note, the old date, "
+            "or that anything was cleared."
+        )
+    )
+    return {
+        "departure_date": None,
+        "weather_data": None,
+        "messages": [nudge],
+    }
+
+
+# ---------------------------------------------------------------------------
 # agent node
 # ---------------------------------------------------------------------------
+
+def _trip_state_snapshot(state: AdventureState) -> SystemMessage:
+    fields = ("origin", "destination", "departure_date", "duration_days", "budget")
+    parts = [f"{f}={state[f]!r}" if state.get(f) is not None else f"{f}=not yet confirmed" for f in fields]
+    parts.append(
+        "weather_data=" + ("already checked, still valid" if state.get("weather_data") else "not yet checked")
+    )
+    return SystemMessage(content="[trip state] " + ", ".join(parts))
+
 
 def agent_node(state: AdventureState) -> dict:
     """The router+planner, merged: one LLM call that sees full history
@@ -40,6 +104,7 @@ def agent_node(state: AdventureState) -> dict:
     messages = state["messages"]
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=PLANNER_SYSTEM_PROMPT), *messages]
+    messages = [*messages, _trip_state_snapshot(state)]
     response: AIMessage = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
@@ -94,16 +159,6 @@ def tools_node(state: AdventureState) -> dict:
                 "duration_days",
             }:
                 state_updates["weather_data"] = None
-        # Persist a successful weather lookup so it's actually readable
-        # from state afterward — previously only the invalidation above
-        # ever touched weather_data, so it was written to None on every
-        # detail change but never written to a real value.
-        elif (
-            call["name"] == "get_weather"
-            and isinstance(output, dict)
-            and output.get("error") is None
-        ):
-            state_updates["weather_data"] = output
     return {"messages": results, **state_updates}
 
 

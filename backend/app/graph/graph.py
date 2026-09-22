@@ -1,13 +1,21 @@
 """
 Graph assembly.
 
-    START -> agent --(tool_calls present)--> tools -> agent   (loop)
-             agent --(none)-----------------> validate
+    START -> check_stale_details -> agent --(tool_calls present)--> tools -> agent   (loop)
+                                     agent --(none)-----------------> validate
     validate --(unverified claims, retries left)--> agent      (loop)
              --(retries exhausted, still unresolved)--> human_input
              --(clean)---------------------------------> respond -> END
     human_input --(person says "retry")--> agent
                 --(otherwise)------------> respond -> END
+
+check_stale_details is the entry point rather than agent directly so
+it runs once on every genuinely fresh turn — a stored departure_date
+that's since slipped into the past gets cleared before the agent ever
+sees it. Command(resume=...), used to answer an interrupt(), re-enters
+the graph exactly where human_input_node paused, not through the entry
+point — so interrupt resumes correctly skip this check; it only fires
+on a new incoming HumanMessage.
 
 Routing is done by plain functions in nodes.py — no prebuilt
 `tools_condition`. `tools` (tools_node), `validate` (validate_node),
@@ -35,6 +43,7 @@ from langgraph.graph import END, StateGraph
 
 from .nodes import (
     agent_node,
+    check_stale_details_node,
     human_input_node,
     respond_node,
     route_after_agent,
@@ -49,13 +58,15 @@ from .state import AdventureState
 def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph = StateGraph(AdventureState)
 
+    graph.add_node("check_stale_details", check_stale_details_node)
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tools_node)
     graph.add_node("validate", validate_node)
     graph.add_node("human_input", human_input_node)
     graph.add_node("respond", respond_node)
 
-    graph.set_entry_point("agent")
+    graph.set_entry_point("check_stale_details")
+    graph.add_edge("check_stale_details", "agent")
 
     graph.add_conditional_edges(
         "agent",
