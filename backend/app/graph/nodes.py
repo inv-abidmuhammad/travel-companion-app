@@ -159,6 +159,13 @@ def tools_node(state: AdventureState) -> dict:
                 "duration_days",
             }:
                 state_updates["weather_data"] = None
+
+        if (
+            call["name"] == "get_weather"
+            and isinstance(output, dict)
+            and output.get("error") is None
+        ):
+            state_updates["weather_data"] = output
     return {"messages": results, **state_updates}
 
 

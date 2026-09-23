@@ -4,9 +4,16 @@ Tests for graph/utils.py: extract_text, is_synthetic, normalize_message.
 These functions sit beneath every node and every message-formatting step,
 so bugs here would silently affect everything above them.
 """
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.graph.utils import extract_text, is_synthetic, normalize_message
+from app.graph.utils import (
+    extract_text,
+    is_synthetic,
+    normalize_message,
+    is_user_facing_ai_message,
+    get_user_facing_messages,
+)
+
 
 
 # ---------------------------------------------------------------------------
@@ -115,3 +122,25 @@ def test_normalize_message_no_tool_calls_key_for_plain_ai_message():
     msg = AIMessage(content="Here's your plan.", id="m6")
     result = normalize_message(msg)
     assert "tool_calls" not in result
+
+
+# ---------------------------------------------------------------------------
+# get_user_facing_messages
+# ---------------------------------------------------------------------------
+
+def test_get_user_facing_messages_excludes_failed_validation_drafts():
+    messages = [
+        HumanMessage(content="Trip to China for 7 days with 50000 budget", id="m1"),
+        AIMessage(content="That's a great start! Budget of 50,000 rupees...", id="m2"),
+        HumanMessage(content="[validation check] unverified claims", id="m3"),
+        AIMessage(content="", tool_calls=[{"name": "calculator", "args": {"expression": "50000/7"}, "id": "c1"}], id="m4"),
+        ToolMessage(content="7142.85", tool_call_id="c1", name="calculator", id="m5"),
+        AIMessage(content="With 50,000 for 7 days, you have ~7,143 per day.", id="m6"),
+    ]
+    result = get_user_facing_messages(messages)
+    assert len(result) == 2
+    assert result[0]["role"] == "user"
+    assert result[0]["text"] == "Trip to China for 7 days with 50000 budget"
+    assert result[1]["role"] == "assistant"
+    assert result[1]["text"] == "With 50,000 for 7 days, you have ~7,143 per day."
+

@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 from sqlalchemy.orm import Session
@@ -36,7 +37,7 @@ from app.db import crud
 from app.db.checkpointer import build_postgres_checkpointer
 from app.db.session import get_db, init_db
 from app.graph.graph import build_graph
-from app.graph.utils import normalize_message
+from app.graph.utils import get_user_facing_messages, normalize_message
 from app.graph.extraction import extract_trip_from_conversation
 
 from app.schemas.chat import ChatRequest, ChatResponse
@@ -57,6 +58,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Adventure Companion", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def get_adventure_graph(request: Request):
@@ -106,6 +117,29 @@ def _backfill_state_from_trip(graph, config: dict, state_values: dict, trip) -> 
         graph.update_state(config, updates)
 
 
+def _sync_trip_row_from_state(graph, config: dict, db: Session, trip_id: str) -> None:
+    """Helper to auto-persist known trip fields from graph state into the durable database row."""
+    try:
+        snap = graph.get_state(config)
+        vals = snap.values
+        fields = {
+            field: vals[field]
+            for field in _STATE_SOURCED_TRIP_FIELDS
+            if vals.get(field) is not None
+        }
+        messages = vals.get("messages", [])
+        try:
+            extracted = extract_trip_from_conversation(messages)
+            if extracted.itinerary_text is not None:
+                fields["itinerary_text"] = extracted.itinerary_text
+        except Exception:
+            pass
+        if fields:
+            crud.update_trip(db, trip_id, **fields)
+    except Exception:
+        pass
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
@@ -121,16 +155,19 @@ def chat(
     The trip_id is returned in every response so the client can call
     PATCH /trips/{trip_id}?sync_from_conversation=true at any time.
     """
+    trip = None
+    if req.trip_id:
+        trip = crud.get_trip(db, req.trip_id)
+        if trip:
+            req.thread_id = trip.thread_id
+
     if req.thread_id is None or req.thread_id.strip() == "":
-        # If the client didn't provide a thread_id, generate one for them.
-        # This is the common case: a new trip starts a new conversation.
         req.thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": req.thread_id}}
     snapshot = graph.get_state(config)
 
-    # Auto-create a trip row the first time this thread is used.
-    # On subsequent messages the existing trip is returned unchanged.
-    trip = crud.get_trip_by_thread_id(db, req.thread_id)
+    if trip is None:
+        trip = crud.get_trip_by_thread_id(db, req.thread_id)
     if trip is None:
         trip = crud.create_trip(db, user_id=req.user_id, thread_id=req.thread_id)
     else:
@@ -143,6 +180,8 @@ def chat(
             {"messages": [HumanMessage(content=req.message)], "user_id": req.user_id},
             config=config,
         )
+
+    _sync_trip_row_from_state(graph, config, db, trip.trip_id)
 
     if "__interrupt__" in result:
         question = result["__interrupt__"][0].value.get("question", "Please respond.")
@@ -158,6 +197,7 @@ def chat(
         thread_id=req.thread_id,
         trip_id=trip.trip_id,
     )
+
 
 
 @app.get("/debug/state/{thread_id}")
@@ -266,10 +306,19 @@ def patch_trip(
 
 
 @app.get("/users/{user_id}/trips", response_model=list[TripOut])
-def list_trips(user_id: str, db: Session = Depends(get_db)) -> list[TripOut]:
+def list_trips(user_id: str, db: Session = Depends(get_db), graph=Depends(get_adventure_graph)) -> list[TripOut]:
     """List all trips for a given user_id. Returns an empty list if none found."""
     trips = crud.list_trips_for_user(db, user_id)
+    for t in trips:
+        if t.destination is None and t.thread_id:
+            try:
+                config = {"configurable": {"thread_id": t.thread_id}}
+                _sync_trip_row_from_state(graph, config, db, t.trip_id)
+            except Exception:
+                pass
+    trips = crud.list_trips_for_user(db, user_id)
     return [TripOut.model_validate(t) for t in trips]
+
 
 
 @app.get("/trips/{trip_id}/resume")
@@ -287,6 +336,9 @@ def resume_trip(trip_id: str, db: Session = Depends(get_db), graph=Depends(get_a
     snapshot = graph.get_state(config)
     values = snapshot.values
 
+    raw_messages = values.get("messages", [])
+    messages = get_user_facing_messages(raw_messages)
+
     return {
         "trip_id": trip.trip_id,
         "thread_id": trip.thread_id,
@@ -296,7 +348,8 @@ def resume_trip(trip_id: str, db: Session = Depends(get_db), graph=Depends(get_a
         "departure_date": trip.departure_date,
         "budget": trip.budget,
         "duration_days": trip.duration_days,
-        "message_count": len(values.get("messages", [])),
+        "messages": messages,
+        "message_count": len(messages),
         "final_response": values.get("final_response"),
     }
 

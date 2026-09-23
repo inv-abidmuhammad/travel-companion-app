@@ -17,14 +17,8 @@ body {
   }
 }
 
-.sidebar-perforation {
-  background-image: radial-gradient(circle, rgba(22, 34, 61, 0.35) 1.5px, transparent 1.6px);
-  background-size: 100% 14px;
-  background-position: center;
-}
-
 .nav-btn {
-  @apply rounded-xl px-4 py-3 text-center font-body text-[16px] font-semibold tracking-wide transition;
+  @apply rounded-2xl px-4 py-3 text-center font-body text-[16px] font-semibold tracking-wide transition;
   @apply focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1E2A44];
 }
 
@@ -35,11 +29,11 @@ body {
 
 .nav-btn-active {
   @apply bg-black text-white hover:bg-gray-700;
-  box-shadow: 0 6px 16px rgba(200, 154, 60, 0.35);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
 }
 
 .trip-card {
-  @apply relative rounded-3xl p-6 pt-8;
+  @apply bg-white relative rounded-3xl p-6 pt-8;
   transform: rotate(var(--card-rotation, 0deg));
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.1);
   transition: transform 300ms ease, box-shadow 300ms ease;

@@ -1,4 +1,4 @@
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 import re
 
 
@@ -67,3 +67,59 @@ def normalize_message(msg) -> dict:
         ]
 
     return normalized
+
+
+def is_user_facing_ai_message(messages: list, index: int) -> bool:
+    """Return True only if the AIMessage at messages[index] was actually
+    presented to the user — meaning:
+
+    1. It has no tool_calls (intermediate planner decisions, never shown to the user).
+    2. It has non-empty text content.
+    3. It is NOT followed by an internal [validation check] injection before the next
+       real HumanMessage (if it is, it was a failed draft that the graph retried
+       internally — the user only ever saw the final corrected version).
+    """
+    m = messages[index]
+    if getattr(m, "tool_calls", None):
+        return False
+
+    text = extract_text(getattr(m, "content", ""))
+    if not text.strip():
+        return False
+
+    for j in range(index + 1, len(messages)):
+        nxt = messages[j]
+        if isinstance(nxt, ToolMessage):
+            continue
+        if isinstance(nxt, HumanMessage):
+            nxt_text = extract_text(nxt.content)
+            if is_synthetic(nxt_text):
+                return False
+            else:
+                return True
+
+    return True
+
+
+def get_user_facing_messages(messages: list) -> list[dict]:
+    """Filter and normalize messages from graph state to include only the messages
+    the user actually saw in the conversation (excluding ToolMessages, internal
+    validation checks, and failed AI drafts that were retried)."""
+    user_facing = []
+    for i, m in enumerate(messages):
+        if isinstance(m, ToolMessage):
+            continue
+
+        if isinstance(m, HumanMessage):
+            text = extract_text(m.content)
+            if is_synthetic(text):
+                continue
+            normalized = normalize_message(m)
+            user_facing.append(normalized)
+
+        elif isinstance(m, AIMessage):
+            if is_user_facing_ai_message(messages, i):
+                normalized = normalize_message(m)
+                user_facing.append(normalized)
+
+    return user_facing
