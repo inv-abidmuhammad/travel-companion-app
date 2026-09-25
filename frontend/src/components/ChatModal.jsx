@@ -13,10 +13,13 @@ export function ChatModal({ isOpen, onClose, selectedTrip, onTripUpdated }) {
   const [tripId, setTripId] = useState(null)
   const [tripMeta, setTripMeta] = useState(null)
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false)
+  const [hasInteracted, setHasInteracted] = useState(false)
   const messagesEndRef = useRef(null)
 
   useEffect(() => {
     if (!isOpen) return
+
+    setHasInteracted(false)
 
     if (selectedTrip) {
       setTripId(selectedTrip.trip_id)
@@ -83,15 +86,17 @@ export function ChatModal({ isOpen, onClose, selectedTrip, onTripUpdated }) {
   if (!isOpen) return null
 
   const handleClose = async () => {
-    if (tripId) {
+    let didSync = false
+    if (tripId && hasInteracted) {
       try {
         await syncTripFromConversation(tripId)
+        didSync = true
+        onTripUpdated?.()
       } catch (err) {
         // sync failure shouldn't prevent closing
       }
     }
-    onTripUpdated?.()
-    onClose()
+    onClose?.(didSync)
   }
 
   const handleSend = async (e) => {
@@ -103,6 +108,7 @@ export function ChatModal({ isOpen, onClose, selectedTrip, onTripUpdated }) {
     setMessages((prev) => [...prev, userMsg])
     setInput('')
     setLoading(true)
+    setHasInteracted(true)
 
     try {
       const res = await sendChatMessage({
@@ -112,7 +118,6 @@ export function ChatModal({ isOpen, onClose, selectedTrip, onTripUpdated }) {
         userId: 'anonymous',
       })
 
-      const activeTripId = res.trip_id || tripId
       if (res.thread_id) setThreadId(res.thread_id)
       if (res.trip_id) setTripId(res.trip_id)
       setAwaitingConfirmation(Boolean(res.awaiting_confirmation))
@@ -121,15 +126,6 @@ export function ChatModal({ isOpen, onClose, selectedTrip, onTripUpdated }) {
         ...prev,
         { role: 'assistant', content: res.reply },
       ])
-
-      if (activeTripId) {
-        syncTripFromConversation(activeTripId)
-          .then((updatedTrip) => {
-            if (updatedTrip) setTripMeta(updatedTrip)
-            onTripUpdated?.()
-          })
-          .catch(() => {})
-      }
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -148,7 +144,12 @@ export function ChatModal({ isOpen, onClose, selectedTrip, onTripUpdated }) {
     tripMeta?.destination || selectedTrip?.destination || 'Destination'
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) handleClose()
+      }}
+    >
       <div className="flex h-[85vh] w-full max-w-2xl flex-col rounded-3xl bg-white shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">

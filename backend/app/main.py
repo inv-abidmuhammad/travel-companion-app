@@ -181,8 +181,6 @@ def chat(
             config=config,
         )
 
-    _sync_trip_row_from_state(graph, config, db, trip.trip_id)
-
     if "__interrupt__" in result:
         question = result["__interrupt__"][0].value.get("question", "Please respond.")
         return ChatResponse(

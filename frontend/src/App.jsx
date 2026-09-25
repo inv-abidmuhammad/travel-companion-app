@@ -50,10 +50,12 @@ function App() {
       />
       <ChatModal
         isOpen={chatOpen}
-        onClose={() => {
+        onClose={(didSync) => {
           setChatOpen(false)
           setSelectedTrip(null)
-          loadTrips()
+          if (didSync) {
+            loadTrips()
+          }
         }}
         selectedTrip={selectedTrip}
         onTripUpdated={loadTrips}
