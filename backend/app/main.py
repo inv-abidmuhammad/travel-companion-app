@@ -363,7 +363,7 @@ def list_trip_messages(trip_id: str, db: Session = Depends(get_db), graph=Depend
     config = {"configurable": {"thread_id": trip.thread_id}}
     snapshot = graph.get_state(config)
     messages = snapshot.values["messages"] if "messages" in snapshot.values else []
-    messages = [normalize_message(m) for m in messages if not isinstance(m, ToolMessage)]
+    messages = [normalize_message(m) for m in messages]
 
     return {
         "trip_id": trip.trip_id,

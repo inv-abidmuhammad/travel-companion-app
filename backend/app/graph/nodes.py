@@ -90,9 +90,23 @@ def check_stale_details_node(state: AdventureState) -> dict:
 def _trip_state_snapshot(state: AdventureState) -> SystemMessage:
     fields = ("origin", "destination", "departure_date", "duration_days", "budget")
     parts = [f"{f}={state[f]!r}" if state.get(f) is not None else f"{f}=not yet confirmed" for f in fields]
-    parts.append(
-        "weather_data=" + ("already checked, still valid" if state.get("weather_data") else "not yet checked")
-    )
+
+    weather_fields = ("destination", "departure_date", "duration_days")
+    missing_for_weather = [f for f in weather_fields if state.get(f) is None]
+
+    if state.get("weather_data"):
+        weather_status = "already checked, still valid"
+    elif not missing_for_weather:
+        weather_status = (
+            "null (ACTION REQUIRED: destination, departure_date, and duration_days are all confirmed, "
+            "but weather_data is null/invalidated. You MUST call get_weather now before generating or updating the itinerary!)"
+        )
+    else:
+        weather_status = (
+            f"null (cannot check weather yet; missing: {', '.join(missing_for_weather)}. "
+            f"You MUST ask the user for {', '.join(missing_for_weather)} before generating or updating an itinerary. Do NOT call get_weather yet.)"
+        )
+    parts.append(f"weather_data={weather_status}")
     return SystemMessage(content="[trip state] " + ", ".join(parts))
 
 
@@ -130,6 +144,9 @@ def tools_node(state: AdventureState) -> dict:
     last_message: AIMessage = state["messages"][-1]
     results = []
     state_updates: dict = {}
+    weather_invalidated = False
+    new_weather_data = None
+
     for call in last_message.tool_calls:
         tool_fn = TOOLS_BY_NAME.get(call["name"])
         if tool_fn is None:
@@ -158,14 +175,20 @@ def tools_node(state: AdventureState) -> dict:
                 "departure_date",
                 "duration_days",
             }:
-                state_updates["weather_data"] = None
+                weather_invalidated = True
 
         if (
             call["name"] == "get_weather"
             and isinstance(output, dict)
             and output.get("error") is None
         ):
-            state_updates["weather_data"] = output
+            new_weather_data = output
+
+    if new_weather_data is not None:
+        state_updates["weather_data"] = new_weather_data
+    elif weather_invalidated:
+        state_updates["weather_data"] = None
+
     return {"messages": results, **state_updates}
 
 
@@ -217,6 +240,18 @@ def _has_budget_claim(text: str) -> bool:
     return False
 
 
+def _has_itinerary(text: str) -> bool:
+    day_schedule_matches = re.findall(r"(?i)(?:^|\n|\*|#)\s*day\s*\d+\s*[:\-\.]", text)
+    if len(day_schedule_matches) >= 1:
+        return True
+    day_numbers = re.findall(r"(?i)\bday\s*\d+\b", text)
+    if len(set(day_numbers)) >= 2:
+        return True
+    if re.search(r"(?i)\b(itinerary|day-by-day)\b", text) and re.search(r"(?i)\bday\s*\d+\b", text):
+        return True
+    return False
+
+
 def _is_internal_message(msg) -> bool:
     """True for HumanMessages injected by the graph itself — validation
     nudges ([validation check]) and human-decision records ([human decision])
@@ -233,10 +268,9 @@ def validate_node(state: AdventureState) -> dict:
     specific claims that no tool call actually produced this
     conversation, per the blueprint's guardrail — "Never invent
     real-time weather, prices, availability... when a live tool is
-    required." Structural contradiction/missing-data checks (e.g.
-    itinerary day count vs. requested duration) belong here too once
-    Phase 2's structured itinerary output exists — this starts with
-    the check that matters most with only two tools in play.
+    required." Also verifies that itineraries are only generated or
+    updated when weather_data is valid, enforcing the tool call or
+    clarifying questions when prerequisites are missing.
 
     If it finds a problem, it appends a corrective HumanMessage and
     signals `needs_revision` so route_after_validate sends control
@@ -254,9 +288,16 @@ def validate_node(state: AdventureState) -> dict:
     # resume turns (where [human decision] HumanMessages are injected),
     # both of which are part of the same planning turn.
     tools_used: set[str] = set()
+    fields_recorded_this_turn: set[str] = set()
     for m in reversed(messages[:-1]):  # [:-1] skips the AIMessage being validated
         if isinstance(m, ToolMessage):
             tools_used.add(m.name)
+        elif isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+            for tc in m.tool_calls:
+                if tc.get("name") == "record_trip_detail":
+                    field = tc.get("args", {}).get("field")
+                    if field:
+                        fields_recorded_this_turn.add(field)
         elif isinstance(m, HumanMessage) and not _is_internal_message(m):
             break  # hit the real user message that started this turn
 
@@ -265,6 +306,27 @@ def validate_node(state: AdventureState) -> dict:
         errors.append("Response describes specific weather conditions without calling get_weather.")
     if _has_budget_claim(text) and "calculator" not in tools_used:
         errors.append("Response states specific budget figures without calling calculator.")
+
+    weather_fields = ("destination", "departure_date", "duration_days")
+    missing_weather_fields = [f for f in weather_fields if state.get(f) is None]
+    has_all_weather_fields = len(missing_weather_fields) == 0
+    weather_is_null = state.get("weather_data") is None and "get_weather" not in tools_used
+    has_itinerary = _has_itinerary(text)
+    weather_field_modified_this_turn = bool(fields_recorded_this_turn & set(weather_fields))
+
+    if has_itinerary:
+        if not has_all_weather_fields:
+            errors.append(
+                f"Response generates or updates an itinerary before required trip details ({', '.join(missing_weather_fields)}) are confirmed. Ask the user for the missing fields first."
+            )
+        elif weather_is_null:
+            errors.append(
+                "Response generates or updates an itinerary while weather_data is null. You must call get_weather first, store the weather in graph state, and only then update the itinerary based on the weather."
+            )
+    elif weather_field_modified_this_turn and has_all_weather_fields and weather_is_null:
+        errors.append(
+            "Trip details were updated and all 3 required fields (destination, departure_date, duration_days) are confirmed, but get_weather was not called. Call get_weather now, set weather in state, and update the itinerary based on the weather."
+        )
 
     attempts = state.get("validation_attempts", 0)
 
