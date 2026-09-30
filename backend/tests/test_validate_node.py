@@ -55,3 +55,96 @@ def test_route_after_validate_reads_the_flags_directly():
     assert route_after_validate({"needs_revision": False, "validation_errors": ["x"]}) == "human_input"
     assert route_after_validate({"needs_revision": False, "validation_errors": []}) == "respond"
     assert route_after_validate({}) == "respond"
+
+
+def test_flags_itinerary_when_weather_null_and_all_fields_set():
+    state = {
+        "destination": "China",
+        "departure_date": "2026-10-01",
+        "duration_days": 10,
+        "weather_data": None,
+        "messages": [
+            HumanMessage(content="change days to 10"),
+            AIMessage(content="Here is your 10-day itinerary:\nDay 1: Arrival in Beijing\nDay 2: Forbidden City"),
+        ],
+    }
+    result = validate_node(state)
+    assert result["needs_revision"] is True
+    assert any("weather_data is null" in e for e in result["validation_errors"])
+    assert any(isinstance(m, HumanMessage) for m in result["messages"])
+
+
+def test_passes_itinerary_when_weather_data_is_present():
+    state = {
+        "destination": "China",
+        "departure_date": "2026-10-01",
+        "duration_days": 10,
+        "weather_data": {"condition": "Sunny", "temp_c": 20},
+        "messages": [
+            HumanMessage(content="Plan my trip"),
+            ToolMessage(content="Sunny 20C", tool_call_id="c1", name="get_weather"),
+            AIMessage(content="Here is your 10-day itinerary:\nDay 1: Arrival in Beijing\nDay 2: Forbidden City"),
+        ],
+    }
+    result = validate_node(state)
+    assert result["needs_revision"] is False
+    assert result["validation_errors"] == []
+
+
+def test_flags_itinerary_when_required_fields_missing():
+    state = {
+        "destination": "China",
+        "departure_date": None,
+        "duration_days": 10,
+        "weather_data": None,
+        "messages": [
+            HumanMessage(content="change days to 10"),
+            AIMessage(content="Here is your 10-day itinerary:\nDay 1: Arrival in Beijing\nDay 2: Forbidden City"),
+        ],
+    }
+    result = validate_node(state)
+    assert result["needs_revision"] is True
+    assert any("before required trip details" in e for e in result["validation_errors"])
+
+
+def test_flags_weather_not_called_when_field_modified_this_turn():
+    state = {
+        "destination": "China",
+        "departure_date": "2026-10-01",
+        "duration_days": 10,
+        "weather_data": None,
+        "messages": [
+            HumanMessage(content="change days to 10"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "record_trip_detail", "args": {"field": "duration_days", "value": 10}, "id": "c1"}],
+            ),
+            ToolMessage(content="{'field': 'duration_days', 'value': 10}", tool_call_id="c1", name="record_trip_detail"),
+            AIMessage(content="I've updated your trip to 10 days! Let me know what you want to do."),
+        ],
+    }
+    result = validate_node(state)
+    assert result["needs_revision"] is True
+    assert any("get_weather was not called" in e for e in result["validation_errors"])
+
+
+def test_passes_when_missing_field_and_agent_asks_for_it():
+    state = {
+        "destination": "China",
+        "departure_date": None,
+        "duration_days": 10,
+        "weather_data": None,
+        "messages": [
+            HumanMessage(content="change days to 10"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "record_trip_detail", "args": {"field": "duration_days", "value": 10}, "id": "c1"}],
+            ),
+            ToolMessage(content="{'field': 'duration_days', 'value': 10}", tool_call_id="c1", name="record_trip_detail"),
+            AIMessage(content="I've updated your trip to 10 days! When are you planning to depart?"),
+        ],
+    }
+    result = validate_node(state)
+    assert result["needs_revision"] is False
+    assert result["validation_errors"] == []
+

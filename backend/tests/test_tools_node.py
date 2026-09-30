@@ -64,3 +64,18 @@ def test_tools_node_handles_multiple_tool_calls_in_one_turn():
     by_id = {m.tool_call_id: m for m in messages}
     assert "6250" in by_id["call_a"].content
     assert "Munnar" in by_id["call_b"].content
+
+
+def test_tools_node_saves_weather_data_even_with_departure_date_change():
+    last_message = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "record_trip_detail", "args": {"field": "departure_date", "value": "2026-10-20"}, "id": "call_d", "type": "tool_call"},
+            {"name": "get_weather", "args": {"location": "China", "date": "2026-10-20"}, "id": "call_w", "type": "tool_call"},
+        ],
+    )
+    result = tools_node({"messages": [last_message]})
+    assert result.get("departure_date") == "2026-10-20"
+    assert result.get("weather_data") is not None
+    assert result["weather_data"]["location"] == "China"
+
